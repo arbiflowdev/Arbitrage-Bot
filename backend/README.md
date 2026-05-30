@@ -255,13 +255,3 @@ The included smoke tests use FastAPI's ASGI transport and exercise the
 
 ---
 
-## 10. What's intentionally left for later milestones
-
-* Marketplace adapters (Eneba, Kinguin, G2G) and the unified provider layer.
-* Arbitrage / repricing engine and pricing snapshots.
-* Inventory subsystem (manual + JIT) and order processing flow.
-* Redis-based distributed locking applied to fulfilment paths.
-* Admin dashboard / frontend.
-* Production deployment, Nginx, TLS, secret encryption at rest.
-
-Each will compose cleanly on top of the foundation delivered here.
