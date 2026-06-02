@@ -1,14 +1,20 @@
-# Digital Goods Arbitrage Platform — Backend (Milestone 1)
+# Digital Goods Arbitrage Platform — Backend (Milestones 1–2)
 
-Production-oriented FastAPI backend implementing the foundation for the
-Digital Goods Arbitrage Platform: configuration, structured logging,
+Production-oriented FastAPI backend for the Digital Goods Arbitrage Platform.
+
+**Milestone 1** delivered the foundation: configuration, structured logging,
 async PostgreSQL + Redis, JWT authentication with admin RBAC, and a
-clean-architecture project layout ready for the marketplace integration,
-arbitrage engine, and order fulfilment work in later milestones.
+clean-architecture project layout.
 
-> Scope: **Milestone 1 only**. Marketplace integrations, the arbitrage
-> engine, dashboard/frontend, and deployment hardening are explicitly
-> out of scope for this milestone.
+**Milestone 2** adds **marketplace API integrations**: a provider adapter
+architecture with a unified abstraction layer (Kinguin + G2G), product/price
+fetch, listing synchronisation, order retrieval, signature-verified webhook
+handling, and retry + rate-limit handling. API keys are supplied via **`.env`**,
+and adapters run in a credential-free **mock mode** by default, so the platform
+is fully usable before real API keys are added.
+
+> Scope through Milestone 2. The arbitrage/repricing engine (M3), inventory &
+> JIT fulfilment (M4), and the admin dashboard (M5) remain out of scope.
 
 ---
 
@@ -37,9 +43,11 @@ backend/
 ├── app/
 │   ├── api/
 │   │   └── v1/
-│   │       ├── endpoints/      # FastAPI routers (auth, health, settings)
+│   │       ├── endpoints/      # auth, health, settings, marketplaces, webhooks
 │   │       └── router.py       # /api/v1 aggregator
 │   ├── core/                   # config, logging, db, redis, security, DI
+│   ├── integrations/           # marketplace adapters + unified abstraction
+│   │                           #   (base, http, registry, kinguin, g2g, mock)
 │   ├── middlewares/            # request-id, access log
 │   ├── models/                 # SQLAlchemy ORM models
 │   ├── repositories/           # Data-access layer (one per aggregate)
@@ -133,6 +141,23 @@ See **`.env.example`** for the authoritative list. Required values:
 | `JWT_ALGORITHM`                | Default `HS256`                                          |
 | `ACCESS_TOKEN_EXPIRE_MINUTES`  | Access-token TTL in minutes                              |
 
+Marketplace integrations (Milestone 2):
+
+| Variable                       | Effect                                                       |
+| ------------------------------ | ----------------------------------------------------------- |
+| `MARKETPLACE_MODE`             | `mock` (default, no keys needed) or `live` (real APIs).     |
+| `KINGUIN_API_KEY`              | Kinguin API key (paste to go live; blank = mock).           |
+| `KINGUIN_API_SECRET`          | Kinguin webhook/HMAC signing secret.                        |
+| `G2G_API_KEY`                 | G2G API key (paste to go live; blank = mock).               |
+| `G2G_API_SECRET`              | G2G request + webhook signing secret.                       |
+| `KINGUIN_API_BASE_URL`         | Kinguin ESA API base URL.                                   |
+| `G2G_API_BASE_URL`             | G2G API base URL.                                           |
+| `KINGUIN_RATE_LIMIT_PER_MINUTE`| Proactive client-side rate limit for Kinguin.               |
+| `G2G_RATE_LIMIT_PER_MINUTE`    | Proactive client-side rate limit for G2G.                   |
+| `HTTP_TIMEOUT_SECONDS`         | Per-request timeout for marketplace calls.                  |
+| `HTTP_MAX_RETRIES`             | Retry attempts on 429/5xx/network errors.                   |
+| `HTTP_RETRY_BACKOFF_SECONDS`   | Base for exponential backoff between retries.               |
+
 Optional convenience:
 
 | Variable                  | Effect                                                  |
@@ -144,19 +169,28 @@ Optional convenience:
 
 ---
 
-## 6. Database schema (Milestone 1)
+## 6. Database schema
 
-The initial Alembic revision `0001_initial` creates:
+Revision `0001_initial` (Milestone 1):
 
 | Table             | Purpose                                                          |
 | ----------------- | ---------------------------------------------------------------- |
 | `users`           | Application users (admin / user roles).                          |
-| `api_credentials` | Marketplace API keys/secrets (Eneba, Kinguin, G2G, …).           |
+| `api_credentials` | Created in M1; **dropped in M2** — API keys now live in `.env`.   |
 | `products`        | Canonical product catalogue keyed by internal SKU.               |
 | `sku_mappings`    | Per-marketplace SKU mapped to internal products.                 |
 | `logs`            | Persistent structured log/event records for the admin dashboard. |
 
-All tables include `id`, `created_at`, and `updated_at`.
+Revision `0002_marketplace_integrations` (Milestone 2):
+
+| Table                | Purpose                                                         |
+| -------------------- | -------------------------------------------------------------- |
+| `marketplace_prices` | Latest fetched price per `(provider, marketplace_sku)`.        |
+| `listings`           | Our listings on each marketplace + sync status.                |
+| `webhook_events`     | Inbound provider webhooks (idempotent, audit trail).           |
+
+It also **drops `api_credentials`** — marketplace API keys now live in `.env`
+only. All tables include `id`, `created_at`, and `updated_at`.
 
 Manage migrations from inside the backend container:
 
@@ -170,9 +204,11 @@ docker compose exec backend alembic revision --autogenerate -m "describe change"
 
 ---
 
-## 7. API surface (Milestone 1)
+## 7. API surface
 
 All endpoints are versioned under `${API_V1_PREFIX}/v1`, i.e. `/api/v1/...`.
+
+### Milestone 1
 
 | Method | Path                  | Auth          | Purpose                                  |
 | ------ | --------------------- | ------------- | ---------------------------------------- |
@@ -181,6 +217,21 @@ All endpoints are versioned under `${API_V1_PREFIX}/v1`, i.e. `/api/v1/...`.
 | POST   | `/api/v1/auth/login`  | public        | Email + password → JWT                   |
 | GET    | `/api/v1/auth/me`     | bearer        | Current authenticated user               |
 | GET    | `/api/v1/settings`    | admin         | Non-sensitive runtime config             |
+
+### Milestone 2 — marketplace integrations
+
+| Method | Path                                          | Auth     | Purpose                                  |
+| ------ | --------------------------------------------- | -------- | ---------------------------------------- |
+| GET    | `/api/v1/marketplaces`                        | admin    | List providers + mode + credential state |
+| POST   | `/api/v1/marketplaces/{provider}/sync/prices` | admin    | Fetch + store marketplace prices         |
+| POST   | `/api/v1/marketplaces/{provider}/sync/listings`| admin   | Fetch + store our listings               |
+| GET    | `/api/v1/marketplaces/{provider}/orders`      | admin    | Fetch recent orders (live read)          |
+| GET    | `/api/v1/marketplace-prices`                  | admin    | List stored prices                       |
+| GET    | `/api/v1/listings`                            | admin    | List stored listings                     |
+| POST   | `/api/v1/webhooks/{provider}`                 | signature| Receive a marketplace webhook            |
+| GET    | `/api/v1/webhook-events`                      | admin    | List received webhook events             |
+
+`{provider}` is one of `kinguin`, `g2g`.
 
 ### Examples
 
@@ -229,7 +280,67 @@ docker compose exec postgres \
 
 ---
 
-## 8. Logging
+## 8. Marketplace integrations (Milestone 2)
+
+### Mock vs live mode
+
+`MARKETPLACE_MODE=mock` (the default) makes every adapter return deterministic
+data with **no API keys required** — ideal for development, demos, and tests.
+Set `MARKETPLACE_MODE=live` to route adapters at the real Kinguin/G2G REST APIs;
+in live mode an adapter stays **dormant** (raises a clear "credentials not
+configured" error) until an active credential exists for that provider.
+
+> The real endpoint paths/field names follow each provider's documented API and
+> should be re-verified against current docs once live API access is granted.
+
+### Providing live API keys
+
+Credentials live in **`.env` only** — there is no database credential store.
+Paste the keys into the placeholders and flip the mode to live:
+
+```dotenv
+MARKETPLACE_MODE=live
+KINGUIN_API_KEY=your-kinguin-key
+KINGUIN_API_SECRET=your-kinguin-webhook-secret
+G2G_API_KEY=your-g2g-key
+G2G_API_SECRET=your-g2g-signing-secret
+```
+
+Restart the app and the adapters go live immediately. Leave a provider's keys
+blank to keep it dormant (live mode) or to return mock data (mock mode).
+`*_API_SECRET` is the provider's webhook/HMAC signing secret. Since `.env` is
+gitignored, keys never reach version control.
+
+### Syncing data
+
+```bash
+# Fetch + store current prices (works immediately in mock mode):
+curl -X POST http://localhost:8000/api/v1/marketplaces/kinguin/sync/prices \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Read what was stored:
+curl "http://localhost:8000/api/v1/marketplace-prices?provider=kinguin" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Webhooks
+
+`POST /api/v1/webhooks/{provider}` is public and verified by the provider's
+signature (not JWT). Events are de-duplicated by `(provider, external_id)` and
+recorded in `webhook_events`; invalid signatures are stored and rejected with
+`400`. Resilience is built into the shared HTTP client: exponential-backoff
+retries on `429`/`5xx`/network errors (honouring `Retry-After`) plus proactive
+Redis-backed per-provider rate limiting.
+
+### Adding a new marketplace (e.g. Eneba)
+
+1. Implement `MarketplaceAdapter` in `app/integrations/<provider>.py`.
+2. Register it in `app/integrations/registry.py` (`_ADAPTERS` + `_http_for`).
+3. Add its base URL / rate-limit settings to `app/core/config.py`.
+
+---
+
+## 9. Logging
 
 * Structured logs via `structlog`, bridged through stdlib logging.
 * JSON output when `LOG_JSON=true`; readable console output otherwise.
@@ -239,7 +350,7 @@ docker compose exec postgres \
 
 ---
 
-## 9. Tests
+## 10. Tests
 
 ```bash
 # Inside the container:
@@ -250,8 +361,11 @@ docker compose exec backend pytest -q
 pytest -q
 ```
 
-The included smoke tests use FastAPI's ASGI transport and exercise the
-`/health` endpoint plus the register → login → me happy path.
+The suite uses FastAPI's ASGI transport and `respx` for mocking outbound HTTP.
+It covers the `/health` endpoint, the register → login → me happy path, the
+`.env` credential resolution, the HTTP client's retry/error handling, the mock
+and real (transport-mocked) adapters, and the marketplace sync + webhook APIs
+end-to-end in mock mode.
 
 ---
 

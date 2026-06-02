@@ -61,6 +61,36 @@ class Settings(BaseSettings):
     # --- Redis ---
     REDIS_URL: str = "redis://redis:6379/0"
 
+    # --- Marketplace integrations ---
+    # ``mock`` lets the platform run end-to-end with no real API keys (the
+    # default, so the app is usable before credentials exist). ``live`` routes
+    # adapters at the real marketplace REST APIs and requires credentials.
+    MARKETPLACE_MODE: Literal["mock", "live"] = "mock"
+
+    # Per-provider REST API base URL.
+    KINGUIN_API_BASE_URL: str = "https://gateway.kinguin.net/esa/api"
+    G2G_API_BASE_URL: str = "https://open.g2g.com"
+
+    # Proactive client-side rate limits (requests/minute) enforced via Redis.
+    KINGUIN_RATE_LIMIT_PER_MINUTE: int = 60
+    G2G_RATE_LIMIT_PER_MINUTE: int = 60
+
+    # Shared outbound HTTP behaviour for all marketplace adapters.
+    HTTP_TIMEOUT_SECONDS: float = 30.0
+    HTTP_MAX_RETRIES: int = 3
+    HTTP_RETRY_BACKOFF_SECONDS: float = 0.5
+
+    # --- Marketplace API credentials via .env (optional fallback) ---
+    # Drop live keys straight into .env here to go live WITHOUT touching the
+    # credentials API/DB. Leave blank to rely on the encrypted-DB credential
+    # store instead. When both exist, the DB store wins (it can hold multiple
+    # labelled credentials and is encrypted at rest). ``*_API_SECRET`` is the
+    # webhook/HMAC signing secret for that provider.
+    KINGUIN_API_KEY: str | None = None
+    KINGUIN_API_SECRET: str | None = None
+    G2G_API_KEY: str | None = None
+    G2G_API_SECRET: str | None = None
+
     # --- JWT / Auth ---
     JWT_SECRET: str = Field(
         default="change-me-in-production-please-use-a-long-random-secret",
@@ -71,7 +101,6 @@ class Settings(BaseSettings):
 
     # --- CORS ---
     # NoDecode prevents pydantic-settings from treating env values as JSON
-    # so a plain ``CORS_ORIGINS=*`` (or comma-separated origins) is accepted.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
 
     # --- Logging ---
@@ -96,21 +125,30 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
 
+    def env_credentials_for(self, provider: str) -> dict[str, str | None] | None:
+        """Return API keys supplied directly via .env for ``provider``, if any.
+
+        Lets an operator go live by pasting keys into ``.env`` instead of using
+        the credentials API. Returns ``None`` when no API key is set for the
+        provider (so the encrypted-DB store / mock mode remains in control).
+        """
+        mapping: dict[str, tuple[str | None, str | None]] = {
+            "kinguin": (self.KINGUIN_API_KEY, self.KINGUIN_API_SECRET),
+            "g2g": (self.G2G_API_KEY, self.G2G_API_SECRET),
+        }
+        pair = mapping.get(provider)
+        if not pair or not pair[0]:
+            return None
+        return {"api_key": pair[0], "api_secret": pair[1]}
+
     # ------------------------------------------------------------------
     # Database URL helpers
     # ------------------------------------------------------------------
-    # ``DATABASE_URL`` accepts either an async SQLAlchemy URL
-    # (``postgresql+asyncpg://...``) or a stock Postgres URL
-    # (``postgresql://...`` — e.g. the connection string Neon hands you).
-    # The helpers below normalise it for the async engine and Alembic.
 
     @property
     def normalized_database_url(self) -> str:
         """Return the DB URL with async driver + libpq-only params stripped."""
         url = self.DATABASE_URL
-        # Only rewrite Postgres URLs — other dialects (e.g. sqlite) need to
-        # be passed through untouched because urlunparse mangles paths when
-        # netloc is empty (e.g. sqlite:///:memory:).
         if not url.startswith(("postgres://", "postgresql://", "postgresql+")):
             return url
 

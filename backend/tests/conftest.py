@@ -17,6 +17,8 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("JWT_SECRET", "test-secret-must-be-at-least-sixteen-chars")
 os.environ.setdefault("LOG_JSON", "false")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
+# Marketplace integrations: run in mock mode (no API keys needed).
+os.environ.setdefault("MARKETPLACE_MODE", "mock")
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -50,3 +52,32 @@ def unique_email() -> str:
     import uuid
 
     return f"user-{uuid.uuid4().hex[:8]}@example.com"
+
+
+@pytest_asyncio.fixture
+async def admin_headers(client: AsyncClient, unique_email: str) -> dict[str, str]:
+    """Register a user, promote it to admin, and return bearer auth headers."""
+    from app.core.database import AsyncSessionLocal  # noqa: E402
+    from app.models.user import UserRole  # noqa: E402
+    from app.repositories.user_repository import UserRepository  # noqa: E402
+
+    password = "S3cure!Passw0rd"
+    reg = await client.post(
+        "/api/v1/auth/register",
+        json={"email": unique_email, "password": password},
+    )
+    assert reg.status_code == 201, reg.text
+
+    async with AsyncSessionLocal() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_email(unique_email.lower())
+        assert user is not None
+        user.role = UserRole.ADMIN
+        await session.commit()
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": unique_email, "password": password},
+    )
+    token = login.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
