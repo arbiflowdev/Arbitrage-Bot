@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     auth,
     health,
     marketplaces,
+    pricing,
     settings,
     webhooks,
 )
@@ -17,4 +18,5 @@ api_router_v1.include_router(health.router)
 api_router_v1.include_router(auth.router)
 api_router_v1.include_router(settings.router)
 api_router_v1.include_router(marketplaces.router)
+api_router_v1.include_router(pricing.router)
 api_router_v1.include_router(webhooks.router)

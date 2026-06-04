@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from app.core.config import settings
 from app.integrations.base import MarketplaceAdapter, ProviderCredentials
+from app.integrations.eneba import EnebaAdapter
 from app.integrations.g2g import G2GAdapter
 from app.integrations.http import MarketplaceHTTPClient
 from app.integrations.kinguin import KinguinAdapter
@@ -18,6 +19,7 @@ from app.integrations.mock import MockAdapter
 _ADAPTERS: dict[str, type[MarketplaceAdapter]] = {
     "kinguin": KinguinAdapter,
     "g2g": G2GAdapter,
+    "eneba": EnebaAdapter,
 }
 
 #: Public tuple of provider identifiers the platform knows about.
@@ -43,6 +45,7 @@ def resolve_credentials(provider: str) -> ProviderCredentials | None:
     return ProviderCredentials(
         api_key=env_creds["api_key"],
         api_secret=env_creds["api_secret"],
+        extra=env_creds.get("extra") or {},
     )
 
 
@@ -53,6 +56,7 @@ def _http_for(provider: str) -> MarketplaceHTTPClient:
             settings.KINGUIN_RATE_LIMIT_PER_MINUTE,
         ),
         "g2g": (settings.G2G_API_BASE_URL, settings.G2G_RATE_LIMIT_PER_MINUTE),
+        "eneba": (settings.ENEBA_API_BASE_URL, settings.ENEBA_RATE_LIMIT_PER_MINUTE),
     }
     base_url, rate = config[provider]
     return MarketplaceHTTPClient(

@@ -83,7 +83,7 @@ async def test_sync_unknown_provider_404(
     client: AsyncClient, admin_headers: dict[str, str]
 ) -> None:
     resp = await client.post(
-        "/api/v1/marketplaces/eneba/sync/prices", headers=admin_headers
+        "/api/v1/marketplaces/nosuchprovider/sync/prices", headers=admin_headers
     )
     assert resp.status_code == 404
 
@@ -142,5 +142,5 @@ async def test_webhook_processed_and_idempotent(
 
 @pytest.mark.asyncio
 async def test_webhook_unknown_provider_404(client: AsyncClient) -> None:
-    resp = await client.post("/api/v1/webhooks/eneba", json={"id": "x"})
+    resp = await client.post("/api/v1/webhooks/nosuchprovider", json={"id": "x"})
     assert resp.status_code == 404

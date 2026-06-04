@@ -14,6 +14,7 @@ from app.integrations.exceptions import (
     ProviderAPIError,
     ProviderUnavailable,
 )
+from app.integrations.eneba import EnebaAdapter
 from app.integrations.http import MarketplaceHTTPClient
 from app.integrations.kinguin import KinguinAdapter
 from app.integrations.mock import MockAdapter
@@ -128,12 +129,86 @@ async def test_kinguin_dormant_without_credentials() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Eneba adapter (OAuth 2.0 + GraphQL, mocked transport)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_eneba_oauth_then_graphql_fetch_prices() -> None:
+    http = MarketplaceHTTPClient(
+        "eneba", "https://api.eneba.com", max_retries=0, backoff=0.0
+    )
+    adapter = EnebaAdapter(
+        credentials=ProviderCredentials(
+            api_key="client-id",
+            api_secret="auth-secret",
+            extra={"auth_id": "auth-id", "webhook_secret": "wh-secret"},
+        ),
+        http=http,
+    )
+    with respx.mock:
+        token_route = respx.post("https://user.eneba.com/oauth/token").mock(
+            return_value=httpx.Response(
+                200,
+                json={"access_token": "tok-abc", "expires_in": 3600, "token_type": "Bearer"},
+            )
+        )
+        respx.post("https://api.eneba.com/graphql/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "S_stock": {
+                            "edges": [
+                                {
+                                    "node": {
+                                        "id": "auction-1",
+                                        "product": {"id": "PROD-1"},
+                                        "price": {"amount": 1099, "currency": "EUR"},
+                                        "availableStock": 5,
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        )
+        prices = await adapter.fetch_prices()
+    assert token_route.called
+    assert len(prices) == 1
+    assert prices[0].marketplace_sku == "PROD-1"
+    assert prices[0].price == Decimal("10.99")  # minor units (1099) -> major
+    assert prices[0].available_qty == 5
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_eneba_dormant_without_credentials() -> None:
+    http = MarketplaceHTTPClient("eneba", "https://api.eneba.com")
+    adapter = EnebaAdapter(credentials=None, http=http)
+    with pytest.raises(CredentialsNotConfigured):
+        await adapter.fetch_prices()
+    await adapter.aclose()
+
+
+def test_eneba_webhook_signature_header() -> None:
+    adapter = EnebaAdapter(
+        credentials=ProviderCredentials(
+            api_key="client-id", extra={"webhook_secret": "shared-secret"}
+        )
+    )
+    assert adapter.verify_webhook({"authorization": "shared-secret"}, b"{}") is True
+    assert adapter.verify_webhook({"authorization": "wrong"}, b"{}") is False
+    assert adapter.verify_webhook({}, b"{}") is False
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 def test_registry_supported_providers() -> None:
     assert is_supported("kinguin")
     assert is_supported("g2g")
-    assert not is_supported("eneba")
+    assert is_supported("eneba")
+    assert not is_supported("nope")
 
 
 def test_registry_mock_mode_returns_mock_adapter() -> None:
@@ -165,3 +240,22 @@ def test_env_credentials_fallback() -> None:
     # Blank/missing key → no fallback (DB store / mock mode stays in control).
     assert s.env_credentials_for("g2g") is None
     assert s.env_credentials_for("unknown") is None
+
+
+def test_env_credentials_fallback_eneba() -> None:
+    from app.core.config import Settings
+
+    # Eneba carries OAuth values + webhook secret under "extra".
+    s = Settings(
+        ENEBA_CLIENT_ID="cid",
+        ENEBA_AUTH_ID="aid",
+        ENEBA_API_SECRET="sec",
+        ENEBA_WEBHOOK_SECRET="wh",
+    )
+    assert s.env_credentials_for("eneba") == {
+        "api_key": "cid",
+        "api_secret": "sec",
+        "extra": {"auth_id": "aid", "webhook_secret": "wh"},
+    }
+    # No client id → dormant.
+    assert Settings(ENEBA_CLIENT_ID="").env_credentials_for("eneba") is None
