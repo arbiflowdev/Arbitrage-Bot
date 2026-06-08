@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -48,7 +48,7 @@ def create_access_token(
     ``subject`` is placed in the standard ``sub`` claim and should be a
     stable user identifier (we use the integer primary key as a string).
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     expire = now + (
         expires_delta
         if expires_delta is not None

@@ -147,6 +147,24 @@ class Settings(BaseSettings):
     MARKETPLACE_WITHDRAWAL_PERCENT: Decimal = Decimal("0")
     MARKETPLACE_WITHDRAWAL_FIXED: Decimal = Decimal("0")
 
+    # --- Hybrid inventory & JIT fulfillment (Milestone 4) ---
+    # Master on/off for the fulfillment + order-poll background workers.
+    FULFILLMENT_ENABLED: bool = True
+    # How often the safety-net poll pulls new orders per provider.
+    FULFILLMENT_POLL_INTERVAL_SECONDS: int = 60
+    # Retry budget per order before it is marked FAILED, plus the base backoff.
+    FULFILLMENT_MAX_ATTEMPTS: int = 5
+    FULFILLMENT_RETRY_BACKOFF_SECONDS: float = 30.0
+    # When True, an out-of-stock order may be sourced just-in-time from the
+    # cheapest other marketplace. When False, it waits for manual restock.
+    JIT_ENABLED: bool = True
+    # Safety cushion added on top of the quoted source cost when validating
+    # wallet funds for a JIT purchase (covers small price/FX drift).
+    JIT_SOURCE_BUFFER_PERCENT: Decimal = Decimal("2")
+    # When True a JIT purchase is rejected if the wallet lacks funds. When
+    # False, balances are tracked for visibility but never block a purchase.
+    WALLET_ENFORCE: bool = True
+
     # --- JWT / Auth ---
     JWT_SECRET: str = Field(
         default="change-me-in-production-please-use-a-long-random-secret",

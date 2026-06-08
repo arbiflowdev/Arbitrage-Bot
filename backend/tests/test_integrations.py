@@ -9,12 +9,12 @@ import pytest
 import respx
 
 from app.integrations.base import ProviderCredentials
+from app.integrations.eneba import EnebaAdapter
 from app.integrations.exceptions import (
     CredentialsNotConfigured,
     ProviderAPIError,
     ProviderUnavailable,
 )
-from app.integrations.eneba import EnebaAdapter
 from app.integrations.http import MarketplaceHTTPClient
 from app.integrations.kinguin import KinguinAdapter
 from app.integrations.mock import MockAdapter

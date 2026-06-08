@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     auth,
+    fulfillment,
     health,
     marketplaces,
     pricing,
@@ -19,4 +20,5 @@ api_router_v1.include_router(auth.router)
 api_router_v1.include_router(settings.router)
 api_router_v1.include_router(marketplaces.router)
 api_router_v1.include_router(pricing.router)
+api_router_v1.include_router(fulfillment.router)
 api_router_v1.include_router(webhooks.router)

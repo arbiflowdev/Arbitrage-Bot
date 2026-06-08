@@ -100,6 +100,26 @@ class ParsedWebhook:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class PurchaseResult:
+    """Outcome of a just-in-time purchase from a source marketplace."""
+
+    external_purchase_id: str
+    code: str
+    cost: Decimal
+    currency: str = "EUR"
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class DeliveryResult:
+    """Outcome of delivering a code to the buyer on a destination marketplace."""
+
+    success: bool
+    reference: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Adapter interface
 # ---------------------------------------------------------------------------
@@ -172,6 +192,38 @@ class MarketplaceAdapter(abc.ABC):
     @abc.abstractmethod
     async def push_listing(self, listing: NormalizedListing) -> NormalizedListing:
         """Create/update a listing (price + stock) on the provider."""
+
+    # --- fulfillment (Milestone 4) -----------------------------------------
+    # These power hybrid order fulfillment: ``purchase`` buys a code just-in-
+    # time from a source marketplace, ``deliver`` hands a code to the buyer on
+    # the destination marketplace. Live per-marketplace wiring is deferred to
+    # live-credential integration, so the base default raises a clear error and
+    # only the mock adapter implements them today (same pattern M3 used for the
+    # competitor offer-book).
+    async def purchase(
+        self,
+        marketplace_sku: str,
+        *,
+        quantity: int = 1,
+        idempotency_key: str | None = None,
+    ) -> PurchaseResult:
+        raise NotImplementedError(
+            f"Just-in-time purchase is not wired for live provider "
+            f"'{self.provider}' yet; it is implemented during live-credential "
+            f"integration."
+        )
+
+    async def deliver(
+        self,
+        external_order_id: str,
+        code: str,
+        *,
+        marketplace_sku: str | None = None,
+    ) -> DeliveryResult:
+        raise NotImplementedError(
+            f"Code delivery is not wired for live provider '{self.provider}' "
+            f"yet; it is implemented during live-credential integration."
+        )
 
     # --- health & webhooks -------------------------------------------------
     @abc.abstractmethod

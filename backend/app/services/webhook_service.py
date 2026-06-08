@@ -19,6 +19,7 @@ from app.integrations import (
     is_supported,
     resolve_credentials,
 )
+from app.integrations.base import to_decimal
 from app.models.webhook_event import WebhookEvent, WebhookEventStatus
 from app.repositories.webhook_event_repository import WebhookEventRepository
 from app.schemas.marketplace import WebhookAck
@@ -98,10 +99,10 @@ class WebhookService:
                 detail="Invalid webhook signature.",
             )
 
-        # Process. Downstream consumers (repricing, fulfilment) arrive in later
-        # milestones; for now we record successful receipt.
+        # Process. Order events are routed into the fulfillment pipeline; other
+        # event types are simply recorded for the audit trail.
         try:
-            self._process(event)
+            await self._process(provider, event, payload)
             event.status = WebhookEventStatus.PROCESSED
             event.processed_at = utcnow()
         except Exception as exc:  # noqa: BLE001 — never crash the webhook endpoint
@@ -117,14 +118,69 @@ class WebhookService:
             detail=None,
         )
 
-    def _process(self, event: WebhookEvent) -> None:
-        """Hook for downstream handling. Extended in later milestones."""
+    async def _process(
+        self, provider: str, event: WebhookEvent, payload: dict[str, Any]
+    ) -> None:
+        """Route a verified event. Order events trigger fulfillment."""
+        if "order" in event.event_type.lower():
+            await self._handle_order_event(provider, event, payload)
         log.info(
             "webhook.processed",
-            provider=event.provider,
+            provider=provider,
             event_type=event.event_type,
             event_id=event.id,
         )
+
+    async def _handle_order_event(
+        self, provider: str, event: WebhookEvent, payload: dict[str, Any]
+    ) -> None:
+        """Ingest an order from a webhook payload and attempt fulfillment.
+
+        Field extraction is intentionally lenient: live providers wrap order
+        data differently, so we accept a top-level payload or a nested
+        ``order``/``data`` object and fall back gracefully. The deliverable
+        marketplace SKU is required — without it we cannot map a product.
+        """
+        from app.services.fulfillment_service import FulfillmentService
+        from app.services.order_intake_service import OrderIntakeService
+
+        data = payload
+        for key in ("order", "data"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                data = nested
+                break
+
+        external_id = event.external_id or str(
+            data.get("order_id") or data.get("id") or ""
+        )
+        marketplace_sku = str(
+            data.get("marketplace_sku")
+            or data.get("product_id")
+            or data.get("kinguinId")
+            or ""
+        )
+        if not external_id or not marketplace_sku:
+            log.info(
+                "fulfillment.webhook_order_skipped",
+                provider=provider,
+                reason="missing external_id or marketplace_sku",
+            )
+            return
+
+        total = to_decimal(data.get("total") or data.get("price"))
+        currency = data.get("currency")
+        order, _created = await OrderIntakeService(self.session).ingest(
+            provider,
+            external_id,
+            marketplace_sku,
+            quantity=int(data.get("quantity") or 1),
+            total=total,
+            currency=currency,
+            raw=payload,
+        )
+        await self.session.commit()
+        await FulfillmentService(self.session).fulfill(order.id)
 
     async def list_events(
         self, provider: str | None = None, *, limit: int = 50, offset: int = 0

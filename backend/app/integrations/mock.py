@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.integrations.base import (
+    DeliveryResult,
     MarketplaceAdapter,
     NormalizedListing,
     NormalizedOrder,
@@ -21,6 +22,7 @@ from app.integrations.base import (
     NormalizedProduct,
     ParsedWebhook,
     ProviderCredentials,
+    PurchaseResult,
 )
 from app.integrations.http import MarketplaceHTTPClient
 
@@ -124,6 +126,39 @@ class MockAdapter(MarketplaceAdapter):
             stock=listing.stock,
             status="active",
             raw={"mock": True, "accepted": True},
+        )
+
+    async def purchase(
+        self,
+        marketplace_sku: str,
+        *,
+        quantity: int = 1,
+        idempotency_key: str | None = None,
+    ) -> PurchaseResult:
+        # Deterministic: the same SKU (+ optional idempotency key) always yields
+        # the same code/cost, so demos and tests are reproducible.
+        seed = f"{self.provider}:{marketplace_sku}:{idempotency_key or ''}"
+        digest = hashlib.sha256(seed.encode()).hexdigest()
+        code = f"MOCK-{self.provider.upper()}-{digest[:16].upper()}"
+        return PurchaseResult(
+            external_purchase_id=f"mock-purchase-{digest[:12]}",
+            code=code,
+            cost=self._deterministic_price(marketplace_sku),
+            currency="EUR",
+            raw={"mock": True, "sku": marketplace_sku, "quantity": quantity},
+        )
+
+    async def deliver(
+        self,
+        external_order_id: str,
+        code: str,
+        *,
+        marketplace_sku: str | None = None,
+    ) -> DeliveryResult:
+        return DeliveryResult(
+            success=True,
+            reference=f"mock-delivery-{external_order_id}",
+            raw={"mock": True, "delivered": True},
         )
 
     async def health_check(self) -> bool:

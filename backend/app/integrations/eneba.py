@@ -62,7 +62,7 @@ class EnebaAdapter(MarketplaceAdapter):
     def __init__(
         self,
         credentials: ProviderCredentials | None = None,
-        http: "MarketplaceHTTPClient | None" = None,
+        http: MarketplaceHTTPClient | None = None,
     ) -> None:
         super().__init__(credentials, http)
         self._access_token: str | None = None

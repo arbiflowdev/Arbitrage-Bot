@@ -24,7 +24,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.redis import close_redis_client, get_redis_client
 from app.middlewares import AccessLogMiddleware, RequestIDMiddleware
 from app.utils.bootstrap import ensure_bootstrap_admin
-from app.workers import PricingScanWorker
+from app.workers import FulfillmentWorker, OrderPollWorker, PricingScanWorker
 
 # Configure logging before anything else so import-time messages are formatted.
 configure_logging()
@@ -56,23 +56,38 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001
         log.warning("bootstrap.admin_failed", error=str(exc))
 
-    # Automated pricing scan worker (Milestone 3). Skipped in tests; the Redis
-    # kill-switch can still halt it at runtime even when enabled here.
-    worker: PricingScanWorker | None = None
-    if settings.APP_ENV != "test" and settings.PRICING_ENGINE_ENABLED:
-        try:
-            worker = PricingScanWorker()
-            worker.start()
-        except Exception as exc:  # noqa: BLE001 — never block startup
-            log.warning("pricing.worker_start_failed", error=str(exc))
+    # Background workers. Skipped in tests; Redis locks/kill-switches still
+    # govern them at runtime even when enabled here.
+    workers: list[object] = []
+    if settings.APP_ENV != "test":
+        if settings.PRICING_ENGINE_ENABLED:
+            try:
+                pricing_worker = PricingScanWorker()
+                pricing_worker.start()
+                workers.append(pricing_worker)
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                log.warning("pricing.worker_start_failed", error=str(exc))
+        if settings.FULFILLMENT_ENABLED:
+            try:
+                fulfillment_worker = FulfillmentWorker()
+                fulfillment_worker.start()
+                workers.append(fulfillment_worker)
+                poll_worker = OrderPollWorker()
+                poll_worker.start()
+                workers.append(poll_worker)
+            except Exception as exc:  # noqa: BLE001 — never block startup
+                log.warning("fulfillment.worker_start_failed", error=str(exc))
 
     log.info("app.ready")
     try:
         yield
     finally:
         log.info("app.shutting_down")
-        if worker is not None:
-            await worker.stop()
+        for worker in workers:
+            try:
+                await worker.stop()  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                log.warning("worker.stop_failed", error=str(exc))
         await close_redis_client()
         await dispose_engine()
         log.info("app.stopped")
