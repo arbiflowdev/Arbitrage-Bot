@@ -24,6 +24,12 @@ def get_redis_client() -> Redis:
             encoding="utf-8",
             decode_responses=True,
             health_check_interval=30,
+            # Fail fast when Redis is unreachable (e.g. not running in local dev)
+            # so kill-switch/status reads fall back to settings in <1s instead of
+            # blocking for seconds on a connection attempt.
+            socket_connect_timeout=0.5,
+            socket_timeout=2.0,
+            retry_on_timeout=False,
         )
     return _redis_client
 

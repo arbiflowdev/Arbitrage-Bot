@@ -165,6 +165,12 @@ class Settings(BaseSettings):
     # False, balances are tracked for visibility but never block a purchase.
     WALLET_ENFORCE: bool = True
 
+    # --- Alerts & dashboard (Milestone 5) ---------------------------------
+    ALERTS_ENABLED: bool = True
+    # Raise a LOW_WALLET alert when a wallet's base-currency balance falls
+    # below this amount.
+    ALERT_LOW_WALLET_THRESHOLD: Decimal = Decimal("25")
+
     # --- JWT / Auth ---
     JWT_SECRET: str = Field(
         default="change-me-in-production-please-use-a-long-random-secret",

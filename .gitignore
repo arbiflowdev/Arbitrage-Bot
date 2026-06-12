@@ -166,3 +166,5 @@ Arbitrage Platform Srs.docx
 Arbitrage_Platform_Milestone_Plan.docx
 *.docx
 docs/
+# Local UI test harness (Playwright) — not for commit
+.uitest/

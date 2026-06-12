@@ -4,6 +4,7 @@ Importing this package guarantees every model is registered on
 ``Base.metadata`` — Alembic autogenerate and tests both rely on that.
 """
 
+from app.models.alert import Alert, AlertSeverity, AlertStatus, AlertType
 from app.models.base import Base, TimestampedMixin
 from app.models.fee_structure import FeeStructure
 from app.models.inventory import Inventory, InventoryStatus
@@ -21,6 +22,10 @@ from app.models.wallet_balance import WalletBalance
 from app.models.webhook_event import WebhookEvent, WebhookEventStatus
 
 __all__ = [
+    "Alert",
+    "AlertSeverity",
+    "AlertStatus",
+    "AlertType",
     "Base",
     "FeeStructure",
     "FulfillmentSource",

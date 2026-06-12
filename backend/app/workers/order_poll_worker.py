@@ -18,6 +18,7 @@ from app.core.database import AsyncSessionLocal
 from app.core.logging import get_logger
 from app.core.redis import acquire_lock
 from app.integrations import SUPPORTED_PROVIDERS, build_adapter, resolve_credentials
+from app.services.fulfillment_control import is_fulfillment_enabled
 from app.services.order_intake_service import OrderIntakeService
 
 log = get_logger(__name__)
@@ -60,6 +61,8 @@ class OrderPollWorker:
 
     async def _tick(self) -> None:
         try:
+            if not await is_fulfillment_enabled():
+                return
             if not settings.FULFILLMENT_ENABLED or settings.MARKETPLACE_MODE != "live":
                 return
             lock = acquire_lock(

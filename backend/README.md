@@ -13,8 +13,42 @@ handling, and retry + rate-limit handling. API keys are supplied via **`.env`**,
 and adapters run in a credential-free **mock mode** by default, so the platform
 is fully usable before real API keys are added.
 
-> Scope through Milestone 2. The arbitrage/repricing engine (M3), inventory &
-> JIT fulfilment (M4), and the admin dashboard (M5) remain out of scope.
+**Milestone 5** completes the MVP: the **arbitrage/repricing engine** (M3),
+**hybrid inventory & JIT fulfillment** (M4), an **alerts** subsystem, a global
+kill-switch, and the **admin dashboard** — a no-build static SPA served by this
+same FastAPI process.
+
+---
+
+## Dashboard
+
+The platform is a **single deployable**: one FastAPI process serves both the API
+and the admin dashboard.
+
+- **Dashboard (SPA):** served at `/` (any non-API path falls back to the SPA's
+  `index.html` for client-side routing).
+- **JSON API:** served under `/api/v1` (e.g. `/api/v1/health`, `/api/v1/alerts`).
+- **API docs:** `/docs` (Swagger) and `/redoc`.
+
+The dashboard is a no-build static SPA (vanilla HTML + Tailwind + Alpine.js +
+Chart.js, all vendored locally — no runtime CDN) living in `app/static/`. There
+is no separate frontend build or deployment.
+
+**Run locally:**
+
+```bash
+cd backend
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Dashboard: http://localhost:8000/   ·   API: http://localhost:8000/api/v1
+```
+
+Pages: Overview KPIs, Orders (filter/retry), Inventory (upload TXT/CSV,
+invalidate keys), Pricing (scan/preview/kill-switch/history), Wallets
+(fund/monitor), Logs, Alerts (acknowledge/resolve), and Connections with the
+global "Stop everything" kill-switch.
+
+See **`docs/DEPLOYMENT.md`** for the cloud-agnostic deployment guide and
+**`docs/OPERATOR_GUIDE.md`** for a page-by-page operator walkthrough.
 
 ---
 

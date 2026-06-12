@@ -25,11 +25,15 @@ from app.core.redis import acquire_lock, enqueue
 from app.fulfillment.exceptions import InsufficientFunds, SourcingUnavailable
 from app.integrations import build_adapter, resolve_credentials
 from app.integrations.base import DeliveryResult
+from app.models.alert import AlertSeverity, AlertType
 from app.models.inventory import Inventory
+from app.models.log import LogLevel
 from app.models.order import FulfillmentSource, Order, OrderStatus
 from app.models.transaction import TransactionType
 from app.repositories.order_repository import OrderRepository
+from app.services.alert_service import AlertService
 from app.services.currency_service import CurrencyService
+from app.services.event_log_service import record_event
 from app.services.inventory_service import InventoryService
 from app.services.sourcing_service import SourcingService
 from app.services.wallet_service import WalletService
@@ -58,6 +62,7 @@ class FulfillmentService:
         self.orders = OrderRepository(session)
         self.inventory = InventoryService(session)
         self.wallet = WalletService(session)
+        self.alerts = AlertService(session)
         self.sourcing = SourcingService(
             session, currency=self.currency, wallet=self.wallet
         )
@@ -144,6 +149,14 @@ class FulfillmentService:
         order.inventory_id = inventory.id
         order.delivered_at = utcnow()
         order.last_error = None
+        await self.alerts.resolve_by_dedupe(f"awaiting-{order.id}")
+        await record_event(
+            self.session,
+            LogLevel.INFO,
+            "fulfillment",
+            f"Order {order.id} delivered via {source.value if source else 'n/a'}",
+            {"order_id": order.id, "provider": order.provider},
+        )
 
         if order.total is not None:
             await self.wallet.credit(
@@ -181,6 +194,22 @@ class FulfillmentService:
     async def _await_stock(self, order: Order, message: str) -> None:
         order.status = OrderStatus.AWAITING_STOCK
         order.last_error = message[:1024]
+        await self.alerts.raise_alert(
+            AlertType.AWAITING_STOCK,
+            AlertSeverity.WARNING,
+            f"Order {order.id} awaiting stock",
+            message,
+            dedupe_key=f"awaiting-{order.id}",
+            provider=order.provider,
+            order_id=order.id,
+        )
+        await record_event(
+            self.session,
+            LogLevel.WARNING,
+            "fulfillment",
+            f"Order {order.id} awaiting stock: {message}",
+            {"order_id": order.id, "provider": order.provider},
+        )
         await self.session.commit()
         await self._enqueue_retry(order.id)
         log.info("fulfillment.awaiting_stock", order_id=order.id, reason=message)
@@ -193,6 +222,22 @@ class FulfillmentService:
         order.inventory_id = None
         if order.attempts >= settings.FULFILLMENT_MAX_ATTEMPTS:
             order.status = OrderStatus.FAILED
+            await self.alerts.raise_alert(
+                AlertType.ORDER_FAILED,
+                AlertSeverity.CRITICAL,
+                f"Order {order.id} failed",
+                message,
+                dedupe_key=f"order-failed-{order.id}",
+                provider=order.provider,
+                order_id=order.id,
+            )
+            await record_event(
+                self.session,
+                LogLevel.ERROR,
+                "fulfillment",
+                f"Order {order.id} failed after {order.attempts} attempts: {message}",
+                {"order_id": order.id, "provider": order.provider},
+            )
             retryable = False
         else:
             order.status = OrderStatus.RECEIVED
@@ -214,6 +259,22 @@ class FulfillmentService:
     async def _fail(self, order: Order, message: str) -> FulfillResult:
         order.status = OrderStatus.FAILED
         order.last_error = message[:1024]
+        await self.alerts.raise_alert(
+            AlertType.ORDER_FAILED,
+            AlertSeverity.CRITICAL,
+            f"Order {order.id} failed",
+            message,
+            dedupe_key=f"order-failed-{order.id}",
+            provider=order.provider,
+            order_id=order.id,
+        )
+        await record_event(
+            self.session,
+            LogLevel.ERROR,
+            "fulfillment",
+            f"Order {order.id} failed: {message}",
+            {"order_id": order.id, "provider": order.provider},
+        )
         await self.session.commit()
         log.warning("fulfillment.failed", order_id=order.id, error=message)
         return FulfillResult(order.id, False, order.status.value, error=message)

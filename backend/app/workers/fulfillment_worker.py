@@ -17,6 +17,7 @@ from app.core.logging import get_logger
 from app.core.redis import acquire_lock
 from app.models.order import OrderStatus
 from app.repositories.order_repository import OrderRepository
+from app.services.fulfillment_control import is_fulfillment_enabled
 from app.services.fulfillment_service import FulfillmentService
 
 log = get_logger(__name__)
@@ -61,7 +62,7 @@ class FulfillmentWorker:
 
     async def _tick(self) -> None:
         try:
-            if not settings.FULFILLMENT_ENABLED:
+            if not await is_fulfillment_enabled():
                 return
             lock = acquire_lock(
                 "fulfillment-sweep", timeout=self.interval, blocking_timeout=0
@@ -80,6 +81,13 @@ class FulfillmentWorker:
                             continue
                         result = await service.fulfill(order.id)
                         delivered += int(result.delivered)
+                    if settings.ALERTS_ENABLED:
+                        from app.services.alert_service import AlertService
+                        try:
+                            await AlertService(session).check_low_wallets()
+                            await session.commit()
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("alerts.low_wallet_scan_failed", error=str(exc))
                 if orders:
                     log.info(
                         "fulfillment.sweep",

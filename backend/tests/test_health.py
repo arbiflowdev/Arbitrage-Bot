@@ -8,7 +8,8 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 async def test_root_lists_metadata(client: AsyncClient) -> None:
-    resp = await client.get("/")
+    # M5: the JSON metadata moved from "/" to "/api" so the SPA can own "/".
+    resp = await client.get("/api")
     assert resp.status_code == 200
     body = resp.json()
     assert body["docs"] == "/docs"

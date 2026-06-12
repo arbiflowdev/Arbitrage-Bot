@@ -8,13 +8,16 @@ Or via Docker (see docker-compose.yml at the project root of ``/backend``).
 
 from __future__ import annotations
 
+import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import api_router_v1
@@ -29,6 +32,11 @@ from app.workers import FulfillmentWorker, OrderPollWorker, PricingScanWorker
 # Configure logging before anything else so import-time messages are formatted.
 configure_logging()
 log = get_logger(__name__)
+
+# Ensure web fonts are served with the correct MIME type (Windows doesn't
+# register these by default, which otherwise serves them as text/plain).
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
 
 
 @asynccontextmanager
@@ -166,7 +174,7 @@ def create_app() -> FastAPI:
         )
 
     # --- Root ---------------------------------------------------------------
-    @app.get("/", include_in_schema=False)
+    @app.get("/api", include_in_schema=False)
     async def root() -> dict[str, str]:
         return {
             "name": settings.APP_NAME,
@@ -174,6 +182,42 @@ def create_app() -> FastAPI:
             "docs": "/docs",
             "api": settings.API_V1_PREFIX + "/v1",
         }
+
+    # --- Static dashboard SPA (served by this same app) ---------------------
+    # The dashboard SPA lives in the repo-root ``dashboard/`` folder (split out
+    # of the backend package), but is still served by this same FastAPI app so
+    # the product deploys as one application on one cloud.
+    static_dir = Path(__file__).resolve().parents[2] / "dashboard"
+    if static_dir.is_dir():
+        # Real asset files (css/js/vendor/assets) are served directly.
+        if (static_dir / "assets").is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=static_dir / "assets"),
+                name="assets",
+            )
+        if (static_dir / "css").is_dir():
+            app.mount("/css", StaticFiles(directory=static_dir / "css"), name="css")
+        if (static_dir / "js").is_dir():
+            app.mount("/js", StaticFiles(directory=static_dir / "js"), name="js")
+        if (static_dir / "vendor").is_dir():
+            app.mount(
+                "/vendor",
+                StaticFiles(directory=static_dir / "vendor"),
+                name="vendor",
+            )
+
+        index_file = static_dir / "index.html"
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            # API + docs are matched by their routers first; anything else
+            # returns the SPA so client-side routing works on refresh. Guard
+            # the API/docs prefixes so an unknown API path returns a real 404
+            # rather than the SPA HTML.
+            if full_path.startswith(("api/", "docs", "openapi.json", "redoc")):
+                raise HTTPException(status_code=404, detail="Not found")
+            return FileResponse(index_file)
 
     return app
 
