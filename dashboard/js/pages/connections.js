@@ -2,10 +2,9 @@ import { api } from "../api.js";
 import { pageHero, ICONS } from "../ui.js";
 
 export async function renderConnections(el) {
-  const [marketplaces, sys, settings] = await Promise.all([
+  const [marketplaces, sys] = await Promise.all([
     api.get("/marketplaces"),
     api.get("/system/status"),
-    api.get("/settings"),
   ]);
   const dot = (on) => `<span class="pill ${on ? "pill-delivered" : "pill-failed"}">${on ? "online" : "halted"}</span>`;
 
@@ -41,10 +40,7 @@ export async function renderConnections(el) {
             return `<tr><td><span class="badge">${name}</span></td><td>${mode}</td><td>${status}</td></tr>`;
           })
           .join("")}</tbody></table>
-      <p class="muted" style="font-size:.82rem;margin-top:.75rem">🔒 API credentials live in the server's <code>.env</code> and apply on redeploy — never entered or shown here.</p>
-    </div>
-    <div class="card"><div class="card-head">Runtime settings</div>
-      <pre style="font-size:.76rem;overflow:auto;margin:0;color:var(--muted);font-family:var(--font-mono)">${JSON.stringify(settings, null, 2)}</pre></div>`;
+    </div>`;
 
   el.querySelector("#stopAll").onclick = async () => {
     await api.post("/system/kill-switch", { enabled: false });
