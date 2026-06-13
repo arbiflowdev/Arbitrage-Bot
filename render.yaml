@@ -1,0 +1,80 @@
+# Render Blueprint — Digital Goods Arbitrage Platform
+# https://render.com/docs/blueprint-spec
+#
+# Deploys the whole product as ONE always-on web service (API + dashboard) plus a
+# managed Key Value (Redis) instance. Postgres is provided externally by Neon —
+# set DATABASE_URL in the dashboard (it is intentionally NOT stored in this file).
+#
+# To use:
+#   1. Push this repo to GitHub.
+#   2. Render Dashboard -> New -> Blueprint -> pick this repo.
+#   3. Render reads render.yaml, creates both resources.
+#   4. Fill in the env vars marked `sync: false` (see steps in DEPLOYMENT.md).
+
+services:
+  # ---- Web service: FastAPI backend + dashboard SPA (one container) --------
+  - type: web
+    name: arbitrage-platform
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter            # $7/mo — always-on (do NOT use free: it sleeps and stops the workers)
+    region: oregon           # keep the same region as the Key Value instance below
+    healthCheckPath: /api    # static JSON, always 200 — good liveness probe
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+
+      # Postgres (Neon). Keep the +asyncpg driver and ?sslmode=require.
+      # Set this secret in the Render dashboard — never commit it.
+      - key: DATABASE_URL
+        sync: false
+
+      # Redis — auto-wired from the Key Value service defined below.
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: arbitrage-redis
+          property: connectionString
+
+      # JWT signing secret — Render generates a strong value once and persists it.
+      - key: JWT_SECRET
+        generateValue: true
+
+      # First admin login — created automatically on startup. Use a real domain.
+      - key: BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+
+      # Lock the dashboard to its own origin in production (comma-separated).
+      # e.g. https://arbitrage-platform.onrender.com
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Marketplace mode: "mock" for a safe demo, "live" once real keys are set.
+      - key: MARKETPLACE_MODE
+        value: mock
+
+      # Marketplace credentials — only needed in live mode. Set in the dashboard.
+      - key: KINGUIN_API_KEY
+        sync: false
+      - key: KINGUIN_API_SECRET
+        sync: false
+      - key: ENEBA_CLIENT_ID
+        sync: false
+      - key: ENEBA_AUTH_ID
+        sync: false
+      - key: ENEBA_API_SECRET
+        sync: false
+      - key: ENEBA_WEBHOOK_SECRET
+        sync: false
+
+  # ---- Managed Redis (Render "Key Value") ----------------------------------
+  - type: keyvalue
+    name: arbitrage-redis
+    plan: free               # 25 MB is plenty for locks + kill-switch flags
+    region: oregon           # MUST match the web service region for internal wiring
+    ipAllowList: []          # internal-only: no public network access
+    maxmemoryPolicy: noeviction   # never evict — these keys are locks, not a cache

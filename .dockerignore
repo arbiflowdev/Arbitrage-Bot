@@ -1,0 +1,39 @@
+# Root build-context ignore for the production Dockerfile.
+# Keep backend/ and dashboard/ — exclude secrets, local cruft, and heavy dirs.
+
+# Secrets — NEVER bake these into the image (injected at runtime by the host).
+**/.env
+**/.env.*
+!**/.env.example
+
+# Version control & tooling
+.git
+.gitignore
+.claude
+.uitest
+
+# Python virtualenvs & caches
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+
+# Tests aren't needed in the runtime image
+backend/tests
+
+# Docs & local-only files
+docs
+*.docx
+*.md
+!README.md
+
+# The backend-only Dockerfile/compose are not used by this root build
+backend/Dockerfile
+backend/docker-compose.yml

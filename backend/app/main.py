@@ -9,6 +9,7 @@ Or via Docker (see docker-compose.yml at the project root of ``/backend``).
 from __future__ import annotations
 
 import mimetypes
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -37,6 +38,31 @@ log = get_logger(__name__)
 # register these by default, which otherwise serves them as text/plain).
 mimetypes.add_type("font/woff2", ".woff2")
 mimetypes.add_type("font/woff", ".woff")
+
+
+def _find_dashboard_dir() -> Path | None:
+    """Locate the dashboard SPA folder across local and container layouts.
+
+    The dashboard lives in the repo-root ``dashboard/`` folder, but the absolute
+    location differs between running locally from ``backend/`` and running inside
+    the Docker image (where the backend is flattened into ``/app``). We try a few
+    well-known candidates and allow an explicit ``DASHBOARD_DIR`` override so the
+    SPA is always found regardless of how the app is deployed.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / "dashboard",  # local: repo-root/backend/app -> repo-root/dashboard
+        here.parents[1] / "dashboard",  # docker: /app/app -> /app/dashboard
+        Path("/app/dashboard"),
+        Path.cwd() / "dashboard",
+    ]
+    override = os.environ.get("DASHBOARD_DIR")
+    if override:
+        candidates.insert(0, Path(override))
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 @asynccontextmanager
@@ -187,8 +213,8 @@ def create_app() -> FastAPI:
     # The dashboard SPA lives in the repo-root ``dashboard/`` folder (split out
     # of the backend package), but is still served by this same FastAPI app so
     # the product deploys as one application on one cloud.
-    static_dir = Path(__file__).resolve().parents[2] / "dashboard"
-    if static_dir.is_dir():
+    static_dir = _find_dashboard_dir()
+    if static_dir is not None and static_dir.is_dir():
         # Real asset files (css/js/vendor/assets) are served directly.
         if (static_dir / "assets").is_dir():
             app.mount(
