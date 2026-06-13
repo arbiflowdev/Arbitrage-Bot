@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-#
 # Production image for the Digital Goods Arbitrage Platform.
 #
 # This builds the WHOLE product as one container: the FastAPI backend AND the
