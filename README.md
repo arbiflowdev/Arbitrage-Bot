@@ -98,11 +98,4 @@ cd backend
 The backend lives in [`backend/`](backend/); see [`backend/README.md`](backend/README.md)
 for full setup, the API surface, and the database schema.
 
-## Documentation
 
-- **[`docs/MILESTONE_5_DELIVERY.md`](docs/MILESTONE_5_DELIVERY.md)** — final
-  delivery & handover note (what shipped, the dashboard, the API, verification).
-- **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — cloud-agnostic deployment guide
-  (Neon/Postgres, Redis, env vars, migrations, Docker, provider notes, first admin).
-- **[`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md)** — page-by-page dashboard
-  walkthrough for operators.
