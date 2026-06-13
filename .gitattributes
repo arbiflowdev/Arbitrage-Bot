@@ -1,0 +1,9 @@
+# Shell scripts and the Docker entrypoint MUST use LF line endings, otherwise
+# the Linux container fails with `env: 'bash\r': No such file or directory`.
+# Force LF on checkout regardless of the contributor's OS / core.autocrlf.
+*.sh text eol=lf
+scripts/entrypoint.sh text eol=lf
+backend/scripts/entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+entrypoint.sh text eol=lf

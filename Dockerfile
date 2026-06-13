@@ -21,13 +21,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /build
 
-# Build deps for psycopg2 / bcrypt; removed in the runtime stage.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
+# All dependencies ship prebuilt manylinux wheels (psycopg2-binary bundles its
+# own libpq, bcrypt/asyncpg/cryptography are wheels), so no compiler toolchain is
+# required — keeping the build small, fast, and low-memory.
 COPY backend/requirements.txt ./
 RUN pip install --prefix=/install -r requirements.txt
 
@@ -38,11 +34,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
-# libpq for asyncpg/psycopg2 at runtime.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libpq5 \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system app \
+# Non-root runtime user. psycopg2-binary bundles its own libpq, so no system
+# packages are needed here — avoids apt entirely (smaller image, no OOM risk).
+RUN groupadd --system app \
     && useradd --system --gid app --create-home --home-dir /home/app app
 
 COPY --from=builder /install /usr/local
