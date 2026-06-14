@@ -65,6 +65,33 @@ def _find_dashboard_dir() -> Path | None:
     return None
 
 
+async def _log_outbound_ip() -> None:
+    """Log the server's public outbound IP at boot (best-effort).
+
+    Handy for confirming which egress IP this instance is using when allowlisting
+    with a third party (e.g. Eneba). NOTE: this only reveals the *single* IP a
+    request happened to exit through — on Render the service may use any address
+    within its region's fixed outbound range, so the authoritative list is the
+    Render dashboard's `Connect -> Outbound` tab. Use this log only as a sanity
+    check, and whitelist the full range with the provider.
+    """
+    import httpx
+
+    services = ("https://api.ipify.org", "https://ifconfig.me/ip")
+    for url in services:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                ip = resp.text.strip()
+            if ip:
+                log.info("app.outbound_ip", outbound_ip=ip, source=url)
+                return
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            log.warning("app.outbound_ip_lookup_failed", source=url, error=str(exc))
+    log.warning("app.outbound_ip_unavailable")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Application start-up & shut-down hooks."""
@@ -73,6 +100,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         environment=settings.APP_ENV,
         version=settings.APP_VERSION,
     )
+
+    # Best-effort: surface the public outbound IP in the logs (for allowlisting).
+    if settings.APP_ENV != "test":
+        await _log_outbound_ip()
 
     # Touch Redis so we fail-fast on misconfiguration.
     try:
