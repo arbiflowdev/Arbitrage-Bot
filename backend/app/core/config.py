@@ -213,6 +213,25 @@ class Settings(BaseSettings):
     BOOTSTRAP_ADMIN_EMAIL: str | None = None
     BOOTSTRAP_ADMIN_PASSWORD: str | None = None
 
+    @field_validator("MARKETPLACE_MODE", mode="before")
+    @classmethod
+    def _normalize_marketplace_mode(cls, value: object) -> object:
+        """Be forgiving about MARKETPLACE_MODE so a stray value can't crash boot.
+
+        A common mistake is copying APP_ENV (``production``) into this field. We
+        map production-ish / unknown values to ``live`` (the safe production
+        default) and explicit dev/test names to ``mock`` — instead of raising a
+        validation error that would take down migrations and startup.
+        """
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if normalized in {"mock", "live"}:
+            return normalized
+        if normalized in {"dev", "development", "test", "testing", "local"}:
+            return "mock"
+        return "live"
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_cors(cls, value: object) -> object:
