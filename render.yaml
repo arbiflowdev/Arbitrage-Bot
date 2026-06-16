@@ -74,6 +74,9 @@ services:
         sync: false
       - key: G2G_API_SECRET
         sync: false
+      # G2G signs every request, so it also needs the seller User ID.
+      - key: G2G_USER_ID
+        sync: false
       - key: ENEBA_CLIENT_ID
         sync: false
       - key: ENEBA_AUTH_ID
