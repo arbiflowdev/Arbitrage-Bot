@@ -63,15 +63,17 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
 
     # --- Marketplace integrations ---
-    # ``mock`` lets the platform run end-to-end with no real API keys (the
-    # default, so the app is usable before credentials exist). ``live`` routes
-    # adapters at the real marketplace REST APIs and requires credentials.
-    MARKETPLACE_MODE: Literal["mock", "live"] = "mock"
+    # ``live`` (default) routes adapters at the real marketplace APIs; each
+    # provider activates automatically the moment its credentials are present in
+    # the environment and stays dormant otherwise — no redeploy or flag flip
+    # needed. ``mock`` is a dev/test-only stand-in that needs no keys (the test
+    # suite forces it via conftest); production never sets it.
+    MARKETPLACE_MODE: Literal["mock", "live"] = "live"
 
     # Per-provider API base URL. Kinguin/G2G are REST; Eneba is a single
     # GraphQL endpoint (``/graphql/``) under this host.
     KINGUIN_API_BASE_URL: str = "https://gateway.kinguin.net/esa/api"
-    G2G_API_BASE_URL: str = "https://open.g2g.com"
+    G2G_API_BASE_URL: str = "https://open-api.g2g.com"
     ENEBA_API_BASE_URL: str = "https://api.eneba.com"
     # Eneba is OAuth 2.0: this is where we exchange credentials for a token.
     ENEBA_OAUTH_TOKEN_URL: str = "https://user.eneba.com/oauth/token"
@@ -87,6 +89,16 @@ class Settings(BaseSettings):
     HTTP_MAX_RETRIES: int = 3
     HTTP_RETRY_BACKOFF_SECONDS: float = 0.5
 
+    # --- Outbound static-IP proxy (optional) ------------------------------
+    # Route ALL marketplace + Eneba outbound calls through a fixed-IP proxy so a
+    # single, stable IP can be whitelisted with providers (e.g. Eneba). Set the
+    # QuotaGuard Static add-on's URL via QUOTAGUARDSTATIC_URL, or a generic
+    # OUTBOUND_PROXY_URL to override it. Leave both blank for a direct
+    # connection — the app works either way (only IP-allowlisted providers need
+    # the proxy).
+    QUOTAGUARDSTATIC_URL: str | None = None
+    OUTBOUND_PROXY_URL: str | None = None
+
     # --- Marketplace API credentials via .env (optional fallback) ---
     # Drop live keys straight into .env here to go live WITHOUT touching the
     # credentials API/DB. Leave blank to rely on the encrypted-DB credential
@@ -97,6 +109,9 @@ class Settings(BaseSettings):
     KINGUIN_API_SECRET: str | None = None
     G2G_API_KEY: str | None = None
     G2G_API_SECRET: str | None = None
+    # G2G OpenAPI signs every request (HMAC-SHA256 over path+key+userid+timestamp),
+    # so it needs the seller User ID alongside the key+secret.
+    G2G_USER_ID: str | None = None
 
     # Eneba uses OAuth 2.0 rather than a single API key. Onboarding gives you a
     # client id plus an authorization id + secret, which we exchange for a
@@ -186,6 +201,11 @@ class Settings(BaseSettings):
     # --- Logging ---
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     LOG_JSON: bool = True
+    # Best-effort: log the public outbound IP at boot (handy for allowlisting).
+    # OFF by default and run non-blocking, because on egress-restricted hosts
+    # (e.g. Render before a static IP/proxy is provisioned) the lookup can stall
+    # startup. Set LOG_OUTBOUND_IP=true only when you actually need the value.
+    LOG_OUTBOUND_IP: bool = False
 
     # --- Bootstrap admin (optional) ---
     # If both set, a default admin will be ensured on startup. Useful for
@@ -204,6 +224,16 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
+
+    @property
+    def outbound_proxy(self) -> str | None:
+        """Outbound HTTP(S) proxy URL, if a static-IP proxy is configured.
+
+        Prefers an explicit ``OUTBOUND_PROXY_URL`` and falls back to the
+        QuotaGuard Static add-on's ``QUOTAGUARDSTATIC_URL``. ``None`` means call
+        marketplaces directly (no proxy).
+        """
+        return (self.OUTBOUND_PROXY_URL or self.QUOTAGUARDSTATIC_URL) or None
 
     def env_credentials_for(self, provider: str) -> dict[str, Any] | None:
         """Return API keys supplied directly via .env for ``provider``, if any.
@@ -228,9 +258,18 @@ class Settings(BaseSettings):
                 },
             }
 
+        # G2G carries the seller User ID (needed to sign requests) under extra.
+        if provider == "g2g":
+            if not self.G2G_API_KEY:
+                return None
+            return {
+                "api_key": self.G2G_API_KEY,
+                "api_secret": self.G2G_API_SECRET,
+                "extra": {"user_id": self.G2G_USER_ID},
+            }
+
         mapping: dict[str, tuple[str | None, str | None]] = {
             "kinguin": (self.KINGUIN_API_KEY, self.KINGUIN_API_SECRET),
-            "g2g": (self.G2G_API_KEY, self.G2G_API_SECRET),
         }
         pair = mapping.get(provider)
         if not pair or not pair[0]:

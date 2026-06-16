@@ -74,13 +74,19 @@ async def _log_outbound_ip() -> None:
     within its region's fixed outbound range, so the authoritative list is the
     Render dashboard's `Connect -> Outbound` tab. Use this log only as a sanity
     check, and whitelist the full range with the provider.
+
+    Runs only when ``LOG_OUTBOUND_IP`` is enabled and is launched as a detached
+    background task (never awaited during startup), so a stalled lookup on an
+    egress-restricted host can never delay or fail boot.
     """
     import httpx
 
     services = ("https://api.ipify.org", "https://ifconfig.me/ip")
     for url in services:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=3.0, proxy=settings.outbound_proxy
+            ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 ip = resp.text.strip()
@@ -101,9 +107,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         version=settings.APP_VERSION,
     )
 
-    # Best-effort: surface the public outbound IP in the logs (for allowlisting).
-    if settings.APP_ENV != "test":
-        await _log_outbound_ip()
+    # Best-effort, opt-in, and fully non-blocking: surface the public outbound
+    # IP in the logs (for allowlisting). Launched detached so it can NEVER delay
+    # or crash startup, even when egress is restricted (Render before a static
+    # IP/proxy exists). Enable with LOG_OUTBOUND_IP=true when you need it.
+    if settings.APP_ENV != "test" and settings.LOG_OUTBOUND_IP:
+        import asyncio
+
+        # Keep a reference so the task isn't GC'd mid-flight; _log_outbound_ip
+        # swallows all errors internally, so it never needs result retrieval.
+        _ip_task = asyncio.create_task(_log_outbound_ip())  # noqa: RUF006
 
     # Touch Redis so we fail-fast on misconfiguration.
     try:

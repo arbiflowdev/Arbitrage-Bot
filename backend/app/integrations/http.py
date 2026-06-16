@@ -60,10 +60,14 @@ class MarketplaceHTTPClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
+            # Route through the static-IP proxy when one is configured (so a
+            # single egress IP can be whitelisted with providers); otherwise
+            # connect directly. ``proxy=None`` is a direct connection.
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers=self.default_headers,
+                proxy=settings.outbound_proxy,
             )
         return self._client
 

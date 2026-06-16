@@ -11,20 +11,24 @@ to ship without keys.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 from typing import Any
 
 from app.core.logging import get_logger
 from app.integrations.base import (
+    DeliveryResult,
     MarketplaceAdapter,
     NormalizedListing,
     NormalizedOrder,
     NormalizedPrice,
     NormalizedProduct,
     ParsedWebhook,
+    PurchaseResult,
     to_decimal,
 )
+from app.integrations.exceptions import ProviderAPIError
 
 log = get_logger(__name__)
 
@@ -164,6 +168,117 @@ class KinguinAdapter(MarketplaceAdapter):
             stock=listing.stock,
             status="synced",
             raw=item,
+        )
+
+    # ------------------------------------------------------------------
+    # Fulfillment — Kinguin is a BUY/source marketplace
+    # ------------------------------------------------------------------
+    #: Bounded poll for key release after an order is placed.
+    _KEYS_POLL_ATTEMPTS = 6
+    _KEYS_POLL_DELAY_SECONDS = 1.5
+
+    async def purchase(
+        self,
+        marketplace_sku: str,
+        *,
+        quantity: int = 1,
+        idempotency_key: str | None = None,
+    ) -> PurchaseResult:
+        """Buy ``quantity`` of a product from Kinguin and return the code.
+
+        Flow (Kinguin ESA — docs: github.com/kinguinltdhk/Kinguin-eCommerce-API):
+          1. GET /v2/products/{id} for the current price (Kinguin orders carry
+             the max price the buyer accepts).
+          2. POST /v2/order {products:[{productId, qty, price}]} -> orderId.
+          3. Poll GET /v2/order/{orderId}/keys until the serial(s) are released.
+        NOTE: the keys-response field name (serial/key/code) should be confirmed
+        against live data; ``_extract_keys`` parses the common shapes defensively.
+        """
+        headers = self._auth_headers()
+        product = await self.http.request_json(
+            "GET", f"/v2/products/{marketplace_sku}", headers=headers
+        )
+        price = to_decimal(product.get("price")) if isinstance(product, dict) else None
+        currency = (
+            str(product.get("currency", "EUR")) if isinstance(product, dict) else "EUR"
+        )
+        if price is None:
+            raise ProviderAPIError(
+                f"Kinguin product '{marketplace_sku}' has no price; cannot purchase."
+            )
+
+        order_body: dict[str, Any] = {
+            "products": [
+                {"productId": marketplace_sku, "qty": quantity, "price": float(price)}
+            ]
+        }
+        if idempotency_key:
+            order_body["orderExternalId"] = idempotency_key
+        created = await self.http.request_json(
+            "POST",
+            "/v2/order",
+            json=order_body,
+            headers={**headers, "Content-Type": "application/json"},
+        )
+        order_id = str(created.get("orderId")) if isinstance(created, dict) else ""
+        if not order_id:
+            raise ProviderAPIError(
+                f"Kinguin order creation returned no orderId: {created!r}"
+            )
+
+        codes: list[str] = []
+        for attempt in range(self._KEYS_POLL_ATTEMPTS):
+            data = await self.http.request_json(
+                "GET", f"/v2/order/{order_id}/keys", headers=headers
+            )
+            codes = self._extract_keys(data)
+            if codes:
+                break
+            if attempt < self._KEYS_POLL_ATTEMPTS - 1:
+                await asyncio.sleep(self._KEYS_POLL_DELAY_SECONDS)
+        if not codes:
+            raise ProviderAPIError(
+                f"Kinguin order '{order_id}' produced no keys after polling."
+            )
+
+        return PurchaseResult(
+            external_purchase_id=order_id,
+            code=codes[0],
+            cost=price,
+            currency=currency,
+            raw={"order": created, "keys_count": len(codes)},
+        )
+
+    @staticmethod
+    def _extract_keys(data: Any) -> list[str]:
+        """Pull serial strings from Kinguin's order-keys response (defensive)."""
+        items: Any = data
+        if isinstance(data, dict):
+            items = data.get("results") or data.get("keys") or data.get("data") or []
+        if not isinstance(items, list):
+            return []
+        out: list[str] = []
+        for it in items:
+            if isinstance(it, str):
+                out.append(it)
+            elif isinstance(it, dict):
+                val = it.get("serial") or it.get("key") or it.get("code") or it.get("value")
+                if val:
+                    out.append(str(val))
+        return out
+
+    async def deliver(
+        self,
+        external_order_id: str,
+        code: str,
+        *,
+        marketplace_sku: str | None = None,
+    ) -> DeliveryResult:
+        # Selling/delivering ON Kinguin uses Kinguin's separate Merchant API, not
+        # the ESA buying API wired here. Kinguin is configured as a source only.
+        raise NotImplementedError(
+            "Delivery on Kinguin requires the Kinguin Merchant API (not the ESA "
+            "buying API). Kinguin is wired as a source/buy marketplace only."
         )
 
     async def health_check(self) -> bool:

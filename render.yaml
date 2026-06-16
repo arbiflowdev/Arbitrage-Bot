@@ -53,14 +53,26 @@ services:
       - key: CORS_ORIGINS
         sync: false
 
-      # Marketplace mode: "mock" for a safe demo, "live" once real keys are set.
+      # Marketplace mode: "live" (real APIs). Each provider activates the moment
+      # its keys are present below and stays dormant otherwise. "mock" is dev-only.
       - key: MARKETPLACE_MODE
-        value: mock
+        value: live
 
-      # Marketplace credentials — only needed in live mode. Set in the dashboard.
+      # Optional static-IP proxy (QuotaGuard Static add-on). Set this so all
+      # marketplace + Eneba calls exit through one fixed IP you can whitelist
+      # (e.g. for Eneba). Leave unset for a direct connection.
+      - key: QUOTAGUARDSTATIC_URL
+        sync: false
+
+      # Marketplace credentials — set in the dashboard. A provider goes live as
+      # soon as its key (and secret, where required) are present.
       - key: KINGUIN_API_KEY
         sync: false
       - key: KINGUIN_API_SECRET
+        sync: false
+      - key: G2G_API_KEY
+        sync: false
+      - key: G2G_API_SECRET
         sync: false
       - key: ENEBA_CLIENT_ID
         sync: false

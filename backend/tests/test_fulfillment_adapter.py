@@ -30,9 +30,11 @@ async def test_mock_deliver_succeeds() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_adapter_purchase_is_not_wired_yet() -> None:
-    # Live per-marketplace purchase/deliver is deferred to live-credential
-    # integration; the base default makes that explicit.
+async def test_kinguin_purchase_dormant_without_credentials() -> None:
+    # Kinguin purchase is now wired for live (see test_live_fulfillment_adapters),
+    # but it stays dormant — raising CredentialsNotConfigured — until keys exist.
+    from app.integrations.exceptions import CredentialsNotConfigured
+
     adapter = KinguinAdapter()
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(CredentialsNotConfigured):
         await adapter.purchase("SKU-1")
