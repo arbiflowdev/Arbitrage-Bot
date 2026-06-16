@@ -4,6 +4,7 @@ import { sk } from "./ui.js";
 import { renderLogin } from "./pages/login.js";
 import { renderOverview } from "./pages/overview.js";
 import { renderOrders } from "./pages/orders.js";
+import { renderProducts } from "./pages/products.js";
 import { renderInventory } from "./pages/inventory.js";
 import { renderPricing } from "./pages/pricing.js";
 import { renderWallets } from "./pages/wallets.js";
@@ -16,6 +17,7 @@ const ROUTES = {
   "/login": renderLogin,
   "/": renderOverview,
   "/orders": renderOrders,
+  "/products": renderProducts,
   "/inventory": renderInventory,
   "/pricing": renderPricing,
   "/wallets": renderWallets,
@@ -26,9 +28,10 @@ const ROUTES = {
 };
 
 const NAV = [
-  ["/", "Overview"], ["/orders", "Orders"], ["/inventory", "Inventory"],
-  ["/pricing", "Pricing"], ["/wallets", "Wallets"], ["/logs", "Logs"],
-  ["/alerts", "Alerts"], ["/users", "Users"], ["/connections", "Connections"],
+  ["/", "Overview"], ["/orders", "Orders"], ["/products", "Products"],
+  ["/inventory", "Inventory"], ["/pricing", "Pricing"], ["/wallets", "Wallets"],
+  ["/logs", "Logs"], ["/alerts", "Alerts"], ["/users", "Users"],
+  ["/connections", "Connections"],
 ];
 
 const S = (p) =>
@@ -36,6 +39,7 @@ const S = (p) =>
 const ICONS = {
   "/": S(`<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>`),
   "/orders": S(`<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h5"/>`),
+  "/products": S(`<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><line x1="7" y1="7" x2="7.01" y2="7"/>`),
   "/inventory": S(`<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>`),
   "/pricing": S(`<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>`),
   "/wallets": S(`<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>`),

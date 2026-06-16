@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProductRead(BaseModel):
@@ -18,6 +18,38 @@ class ProductRead(BaseModel):
     region: str | None = None
     is_active: bool
     created_at: datetime
+
+
+class ProductCreate(BaseModel):
+    internal_sku: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    platform: str | None = Field(default=None, max_length=64)
+    region: str | None = Field(default=None, max_length=64)
+
+
+class ProductUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    platform: str | None = Field(default=None, max_length=64)
+    region: str | None = Field(default=None, max_length=64)
+    is_active: bool | None = None
+
+
+class SkuMappingCreate(BaseModel):
+    marketplace: str = Field(min_length=1, max_length=64)
+    marketplace_sku: str = Field(min_length=1, max_length=128)
+    marketplace_url: str | None = Field(default=None, max_length=1024)
+
+
+class SkuMappingRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    product_id: int
+    marketplace: str
+    marketplace_sku: str
+    marketplace_url: str | None = None
 
 
 class AlertRead(BaseModel):

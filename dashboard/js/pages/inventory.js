@@ -14,7 +14,7 @@ export async function renderInventory(el) {
   let fileContent = null;
 
   if (!products.length) {
-    el.innerHTML = `<div class="card">No products in the catalogue yet — add a product before stocking inventory.</div>`;
+    el.innerHTML = `<div class="card">No products in the catalogue yet — <a href="#/products">add a product</a> first, then come back here to upload its codes.</div>`;
     return;
   }
 
