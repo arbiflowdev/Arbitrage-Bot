@@ -9,10 +9,13 @@ G2G is wired as a SELL/deliver destination: :meth:`deliver` posts codes to
 endpoint, so :meth:`purchase` is unsupported (source via Kinguin instead). The
 OpenAPI officially supports Gift Card & Top Up products.
 
-NOTE: the read/sync methods (fetch_*) still use the older ``/v1/offers`` paths
-and unsigned headers and must be updated to the signed v2 product endpoints
-before live price-sync; the buy/deliver path is the focus of live fulfillment.
-The adapter stays dormant until an active credential is configured.
+Read/sync is wired to the signed v2 endpoints (docs.g2g.com): ``fetch_listings``
+and ``fetch_prices`` page through ``POST /v2/offers/search`` (the seller's own
+offers — ``payload.results[]`` carrying ``offer_id``/``unit_price``/
+``available_qty``/``status``); repricing pushes via ``PATCH /v2/offers/{id}``
+(``unit_price`` + ``api_qty``). The marketplace SKU for a G2G mapping is the
+``offer_id``. ``GET /v2/products`` is catalogue metadata only (no prices), so it
+is not a pricing source. The adapter stays dormant until a credential is set.
 """
 
 from __future__ import annotations
@@ -113,36 +116,94 @@ class G2GAdapter(MarketplaceAdapter):
             raw=item,
         )
 
+    #: Bounded pagination for offer search (page_size 100, up to 1000 offers).
+    _SEARCH_PAGE_SIZE = 100
+    _SEARCH_MAX_PAGES = 10
+
+    async def _search_offers(
+        self, *, status: str = "live", query: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Page through the seller's offers via ``POST /v2/offers/search``.
+
+        The G2G Seller OpenAPI exposes no bulk ``GET /v2/offers``; the search
+        endpoint returns the authenticated seller's own offers (the response
+        carries our ``seller_id``), filtered by status (default ``live``). We
+        page until a short page or the safety cap, signing every request.
+        """
+        path = "/v2/offers/search"
+        results: list[dict[str, Any]] = []
+        for page in range(1, self._SEARCH_MAX_PAGES + 1):
+            filter_: dict[str, Any] = {"status": status}
+            if query:
+                filter_["query"] = query
+            body = {
+                "filter": filter_,
+                "page_size": self._SEARCH_PAGE_SIZE,
+                "page": page,
+            }
+            data = await self.http.request_json(
+                "POST",
+                path,
+                json=body,
+                headers=self._signed_headers(path, json_body=True),
+            )
+            items = self._items(data)
+            results.extend(items)
+            if len(items) < self._SEARCH_PAGE_SIZE:
+                break
+        return results
+
     async def fetch_products(
         self, *, limit: int = 50, page: int = 1
     ) -> list[NormalizedProduct]:
+        """Catalogue metadata via ``GET /v2/products`` (no pricing).
+
+        Requires a ``brand_id`` (and ``service_id``) — supplied via credential
+        ``extra``; without them G2G returns 400, so we stay quiet and return [].
+        """
+        extra = (self.credentials.extra if self.credentials else None) or {}
+        brand_id = extra.get("brand_id")
+        service_id = extra.get("service_id")
+        if not brand_id or not service_id:
+            return []
+        params: dict[str, Any] = {"brand_id": brand_id, "service_id": service_id}
+        if extra.get("category_id"):
+            params["category_id"] = extra["category_id"]
         data = await self.http.request_json(
             "GET",
-            "/v1/offers",
-            params={"page_size": limit, "page": page},
-            headers=self._auth_headers(),
+            "/v2/products",
+            params=params,
+            headers=self._signed_headers("/v2/products"),
         )
-        return [self._to_product(item) for item in self._items(data)]
+        payload = data.get("payload", {}) if isinstance(data, dict) else {}
+        product_list = payload.get("product_list", []) if isinstance(payload, dict) else []
+        return [
+            NormalizedProduct(
+                marketplace_sku=str(item.get("product_id") or ""),
+                name=str(item.get("product_name") or ""),
+                region=item.get("region_name"),
+                platform=item.get("brand_name"),
+                raw=item,
+            )
+            for item in product_list
+            if isinstance(item, dict)
+        ]
 
     async def fetch_prices(
         self, skus: list[str] | None = None
     ) -> list[NormalizedPrice]:
-        data = await self.http.request_json(
-            "GET",
-            "/v1/offers",
-            params={"page_size": 100, "page": 1},
-            headers=self._auth_headers(),
-        )
         wanted = set(skus) if skus else None
         prices: list[NormalizedPrice] = []
-        for item in self._items(data):
+        for item in await self._search_offers():
             sku = self._sku_of(item)
             if wanted is not None and sku not in wanted:
                 continue
             price = to_decimal(item.get("unit_price") or item.get("price"))
             if price is None:
                 continue
-            qty = item.get("available_stock") or item.get("qty")
+            qty = item.get("available_qty")
+            if qty is None:
+                qty = item.get("available_stock") or item.get("qty")
             prices.append(
                 NormalizedPrice(
                     marketplace_sku=sku,
@@ -156,24 +217,22 @@ class G2GAdapter(MarketplaceAdapter):
         return prices
 
     async def fetch_listings(self) -> list[NormalizedListing]:
-        data = await self.http.request_json(
-            "GET",
-            "/v1/offers",
-            params={"page_size": 100, "page": 1, "seller": "self"},
-            headers=self._auth_headers(),
-        )
         listings: list[NormalizedListing] = []
-        for item in self._items(data):
+        for item in await self._search_offers():
+            offer_id = item.get("offer_id")
+            qty = item.get("available_qty")
+            if qty is None:
+                qty = item.get("available_stock") or 0
             listings.append(
                 NormalizedListing(
                     marketplace_sku=self._sku_of(item),
-                    external_listing_id=str(item.get("offer_id"))
-                    if item.get("offer_id") is not None
+                    external_listing_id=str(offer_id)
+                    if offer_id is not None
                     else None,
                     title=item.get("title") or item.get("offer_title"),
                     price=to_decimal(item.get("unit_price") or item.get("price")),
                     currency=str(item.get("currency", "USD")),
-                    stock=int(item.get("available_stock") or 0),
+                    stock=int(qty or 0),
                     status=str(item.get("status", "active")),
                     raw=item,
                 )
@@ -205,38 +264,45 @@ class G2GAdapter(MarketplaceAdapter):
         return orders
 
     async def push_listing(self, listing: NormalizedListing) -> NormalizedListing:
-        payload = {
-            "unit_price": str(listing.price) if listing.price is not None else None,
-            "available_stock": listing.stock,
-        }
-        if listing.external_listing_id:
-            data = await self.http.request_json(
-                "PUT",
-                f"/v1/offers/{listing.external_listing_id}",
-                json=payload,
-                headers=self._auth_headers(),
+        """Reprice/restock an existing offer via ``PATCH /v2/offers/{offer_id}``.
+
+        The repricer only ever updates an offer it already synced, so an
+        ``offer_id`` (carried as ``external_listing_id``, falling back to the
+        mapped ``marketplace_sku``) is required. Creating a brand-new offer
+        needs catalogue attributes the repricer does not have, so that is not
+        attempted here.
+        """
+        offer_id = listing.external_listing_id or listing.marketplace_sku
+        if not offer_id:
+            raise ProviderAPIError(
+                "G2G push_listing requires an offer_id (external_listing_id or "
+                "marketplace_sku); creating new offers via the repricer is not "
+                "supported."
             )
-        else:
-            payload["title"] = listing.title
-            data = await self.http.request_json(
-                "POST",
-                "/v1/offers",
-                json=payload,
-                headers=self._auth_headers(),
-            )
-        item = data.get("payload", data) if isinstance(data, dict) else {}
+        payload: dict[str, Any] = {}
+        if listing.price is not None:
+            payload["unit_price"] = str(listing.price)
+        payload["api_qty"] = listing.stock
+        path = f"/v2/offers/{offer_id}"
+        data = await self.http.request_json(
+            "PATCH",
+            path,
+            json=payload,
+            headers=self._signed_headers(path, json_body=True),
+        )
+        item = data.get("payload", {}) if isinstance(data, dict) else {}
         if not isinstance(item, dict):
             item = {}
         return NormalizedListing(
             marketplace_sku=listing.marketplace_sku,
             external_listing_id=str(item.get("offer_id"))
             if item.get("offer_id") is not None
-            else listing.external_listing_id,
+            else offer_id,
             title=listing.title,
             price=listing.price,
             currency=listing.currency,
             stock=listing.stock,
-            status="synced",
+            status=str(item.get("status", "synced")),
             raw=item,
         )
 
@@ -317,11 +383,12 @@ class G2GAdapter(MarketplaceAdapter):
         )
 
     async def health_check(self) -> bool:
+        path = "/v2/offers/search"
         await self.http.request_json(
-            "GET",
-            "/v1/offers",
-            params={"page_size": 1, "page": 1},
-            headers=self._auth_headers(),
+            "POST",
+            path,
+            json={"filter": {"status": "live"}, "page_size": 1, "page": 1},
+            headers=self._signed_headers(path, json_body=True),
         )
         return True
 

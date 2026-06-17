@@ -13,7 +13,8 @@ import httpx
 import pytest
 import respx
 
-from app.integrations.base import ProviderCredentials
+from app.integrations.base import NormalizedListing, ProviderCredentials
+from app.integrations.exceptions import ProviderAPIError
 from app.integrations.g2g import G2GAdapter
 from app.integrations.http import MarketplaceHTTPClient
 from app.integrations.kinguin import KinguinAdapter
@@ -142,6 +143,150 @@ async def test_g2g_deliver_posts_code_with_signed_headers() -> None:
     req = post_route.calls.last.request
     assert req.headers.get("g2g-signature")  # request was signed
     assert "CODE-XYZ" in req.content.decode()
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# G2G v2 signed read/sync (Search Offers) + repricing push (Update Offer)
+# ---------------------------------------------------------------------------
+def _search_response(results: list[dict]) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "request_id": "r-1",
+            "code": 20000001,
+            "message": "",
+            "warning": "",
+            "payload": {"results": results},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_g2g_fetch_listings_searches_offers_signed() -> None:
+    http = MarketplaceHTTPClient("g2g", "https://g2g.test", max_retries=0, backoff=0.0)
+    adapter = G2GAdapter(
+        credentials=ProviderCredentials(
+            api_key="k", api_secret="s", extra={"user_id": "100000"}
+        ),
+        http=http,
+    )
+    with respx.mock:
+        route = respx.post("https://g2g.test/v2/offers/search").mock(
+            return_value=_search_response(
+                [
+                    {
+                        "offer_id": "G1669195856128DY",
+                        "title": "Steam Wallet 20 EUR",
+                        "status": "live",
+                        "currency": "EUR",
+                        "unit_price": 18.5,
+                        "available_qty": 12,
+                    }
+                ]
+            )
+        )
+        listings = await adapter.fetch_listings()
+
+    assert len(listings) == 1
+    lst = listings[0]
+    assert lst.marketplace_sku == "G1669195856128DY"
+    assert lst.external_listing_id == "G1669195856128DY"
+    assert lst.price == Decimal("18.5")
+    assert lst.stock == 12
+    assert lst.status == "live"
+    req = route.calls.last.request
+    assert req.headers.get("g2g-signature")  # signed v2 request
+    assert "/v2/offers/search" in str(req.url)
+    assert "live" in req.content.decode()
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_g2g_fetch_prices_searches_offers() -> None:
+    http = MarketplaceHTTPClient("g2g", "https://g2g.test", max_retries=0, backoff=0.0)
+    adapter = G2GAdapter(
+        credentials=ProviderCredentials(
+            api_key="k", api_secret="s", extra={"user_id": "1"}
+        ),
+        http=http,
+    )
+    with respx.mock:
+        respx.post("https://g2g.test/v2/offers/search").mock(
+            return_value=_search_response(
+                [
+                    {
+                        "offer_id": "OFR-1",
+                        "unit_price": 9.99,
+                        "currency": "EUR",
+                        "available_qty": 5,
+                        "status": "live",
+                    },
+                    # No price -> must be skipped, never aborts the sync.
+                    {"offer_id": "OFR-2", "currency": "EUR", "status": "live"},
+                ]
+            )
+        )
+        prices = await adapter.fetch_prices()
+
+    assert [p.marketplace_sku for p in prices] == ["OFR-1"]
+    assert prices[0].price == Decimal("9.99")
+    assert prices[0].available_qty == 5
+    assert prices[0].is_available is True
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_g2g_push_listing_patches_offer_signed() -> None:
+    http = MarketplaceHTTPClient("g2g", "https://g2g.test", max_retries=0, backoff=0.0)
+    adapter = G2GAdapter(
+        credentials=ProviderCredentials(
+            api_key="k", api_secret="s", extra={"user_id": "1"}
+        ),
+        http=http,
+    )
+    with respx.mock:
+        route = respx.patch("https://g2g.test/v2/offers/OFR-1").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "code": 20000001,
+                    "payload": {
+                        "offer_id": "OFR-1",
+                        "unit_price": 21.0,
+                        "status": "live",
+                    },
+                },
+            )
+        )
+        out = await adapter.push_listing(
+            NormalizedListing(
+                marketplace_sku="OFR-1",
+                external_listing_id="OFR-1",
+                price=Decimal("21.00"),
+                stock=7,
+                currency="EUR",
+            )
+        )
+
+    assert out.external_listing_id == "OFR-1"
+    req = route.calls.last.request
+    assert req.headers.get("g2g-signature")  # signed v2 PATCH
+    body = req.content.decode()
+    assert "unit_price" in body and "api_qty" in body
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_g2g_push_listing_requires_offer_id() -> None:
+    http = MarketplaceHTTPClient("g2g", "https://g2g.test")
+    adapter = G2GAdapter(
+        credentials=ProviderCredentials(api_key="k", api_secret="s"), http=http
+    )
+    with pytest.raises(ProviderAPIError):
+        await adapter.push_listing(
+            NormalizedListing(marketplace_sku="", external_listing_id=None)
+        )
     await adapter.aclose()
 
 
