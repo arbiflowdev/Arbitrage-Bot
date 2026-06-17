@@ -35,7 +35,7 @@ export async function renderPricing(el) {
               .map(
                 (h) => `<tr><td>${h.id}</td><td><span class="badge">${h.provider ?? "—"}</span></td>
             <td>${h.marketplace_sku ?? "—"}</td><td class="mono">${h.old_price ?? "—"}</td>
-            <td class="mono">${h.new_price ?? "—"}</td><td>${h.decision ?? h.reason ?? "—"}</td></tr>`,
+            <td class="mono">${h.new_price ?? "—"}</td><td title="${(h.notes ?? "").replace(/"/g, "&quot;")}" style="cursor:${h.notes ? "help" : "default"}">${(h.strategy ?? h.decision ?? h.reason ?? "—").replace(/_/g, " ")}${h.notes ? ' <span class="muted" style="font-size:.7rem">ⓘ</span>' : ""}</td></tr>`,
               )
               .join("")
           : `<tr><td colspan="6" class="muted" style="text-align:center;padding:1.5rem">No repricing runs yet.</td></tr>`

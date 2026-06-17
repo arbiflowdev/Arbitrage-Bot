@@ -70,7 +70,14 @@ export async function renderOverview(el) {
     </div>`;
 
   const labels = Object.keys(s.orders);
-  new Chart(el.querySelector("#ordersChart"), {
+  const orderTotal = labels.reduce((sum, k) => sum + (s.orders[k] || 0), 0);
+  const canvas = el.querySelector("#ordersChart");
+  if (!orderTotal) {
+    canvas.outerHTML = `<p class="muted" style="text-align:center;padding:2.5rem 1rem">
+      No orders yet — this chart fills in automatically as orders arrive.</p>`;
+    return;
+  }
+  new Chart(canvas, {
     type: "doughnut",
     data: {
       labels,
