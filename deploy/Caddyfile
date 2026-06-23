@@ -1,0 +1,19 @@
+# Caddy reverse proxy — automatic HTTPS, zero manual cert management.
+#
+# {$DOMAIN} is supplied by the DOMAIN env var (see deploy/.env):
+#   • a real hostname (e.g. app.example.com)  -> free Let's Encrypt certificate,
+#                                                 auto-renewed.
+#   • ":80"                                    -> plain HTTP on the server's IP
+#                                                 (interim, before a domain exists).
+#
+# Before using a hostname, point its DNS A record at this server's IPv4. Caddy
+# then obtains and renews the certificate automatically on first request.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:8000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+	}
+}

@@ -1,0 +1,88 @@
+# Production stack for the Digital Goods Arbitrage Platform — single VPS (Hetzner).
+#
+# Runs THREE containers:
+#   app    – FastAPI backend + dashboard SPA + the 3 in-process background workers
+#            (built from the repo-root Dockerfile; entrypoint runs DB migrations).
+#   redis  – locks / kill-switches / queues (self-hosted; replaces Render Key Value).
+#   caddy  – public reverse proxy with automatic HTTPS (Let's Encrypt).
+#
+# Postgres is NOT here — it stays on Neon. Set DATABASE_URL in deploy/.env.
+#
+# The app's outbound marketplace calls exit from THIS server's public IPv4 — that
+# is the single static IP you whitelist with Kinguin / Eneba / Rokky. No proxy
+# needed, so leave OUTBOUND_PROXY_URL / QUOTAGUARDSTATIC_URL unset.
+#
+# Usage (from the deploy/ directory on the server):
+#   cp env.example .env        # then fill in the secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+
+name: arbitrage
+
+services:
+  app:
+    build:
+      context: ..              # repo root, so backend/ + dashboard/ are in scope
+      dockerfile: Dockerfile   # the repo-root all-in-one Dockerfile
+    image: arbitrage-app:latest
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Internal Redis on the compose network — overrides any REDIS_URL in .env.
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"                 # internal only — reachable by caddy, never public
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 45s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    # appendonly = durable across restarts; noeviction = never drop locks/flags.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Your domain (e.g. app.example.com) for free HTTPS, or ":80" for plain
+      # HTTP on the bare IP as an interim before a domain is pointed here.
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env (a hostname, or \":80\" for http-only)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # persisted certs — survives restarts/redeploys
+      - caddy_config:/config
+    depends_on:
+      - app
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:
