@@ -80,10 +80,13 @@ class EnebaAdapter(MarketplaceAdapter):
 
         extra = creds.extra or {}
         # Eneba's token request is form-encoded with grant_type=api_consumer.
+        # ``client_id`` is a FIXED Eneba application id shared by all sellers (not
+        # a per-seller credential); the seller's Auth ID goes in ``id`` and the
+        # Auth Secret in ``secret``.
         form = {
             "grant_type": "api_consumer",
-            "client_id": creds.api_key or "",
-            "id": extra.get("auth_id") or "",
+            "client_id": settings.ENEBA_OAUTH_CLIENT_ID,
+            "id": extra.get("auth_id") or creds.api_key or "",
             "secret": creds.api_secret or "",
         }
         token_data = await self.http.request_json(

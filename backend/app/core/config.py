@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     ENEBA_API_BASE_URL: str = "https://api.eneba.com"
     # Eneba is OAuth 2.0: this is where we exchange credentials for a token.
     ENEBA_OAUTH_TOKEN_URL: str = "https://user.eneba.com/oauth/token"
+    # Eneba's OAuth ``client_id`` is a FIXED application identifier shared by all
+    # sellers (NOT a per-seller credential) — sellers only receive an Auth ID +
+    # Auth Secret. This is the documented production value; override for sandbox.
+    ENEBA_OAUTH_CLIENT_ID: str = "917611c2-70a5-11e9-97c4-46691b78bfa2"
 
     # Proactive client-side rate limits (requests/minute) enforced via Redis.
     KINGUIN_RATE_LIMIT_PER_MINUTE: int = 60
@@ -113,11 +117,14 @@ class Settings(BaseSettings):
     # so it needs the seller User ID alongside the key+secret.
     G2G_USER_ID: str | None = None
 
-    # Eneba uses OAuth 2.0 rather than a single API key. Onboarding gives you a
-    # client id plus an authorization id + secret, which we exchange for a
-    # Bearer token. ``ENEBA_WEBHOOK_SECRET`` is the Authorization header value
-    # we register with Eneba (via P_registerCallback) to authenticate inbound
-    # callbacks. Leave blank to keep Eneba dormant / in mock mode.
+    # Eneba uses OAuth 2.0 rather than a single API key. Onboarding gives a
+    # seller exactly TWO values: an Auth ID and an Auth Secret. These map to the
+    # OAuth ``id`` and ``secret`` fields; the ``client_id`` field is a fixed app
+    # constant (``ENEBA_OAUTH_CLIENT_ID``), not a per-seller credential. Either
+    # ``ENEBA_AUTH_ID`` or ``ENEBA_CLIENT_ID`` may hold the Auth ID (the latter
+    # is kept for backwards compatibility). ``ENEBA_WEBHOOK_SECRET`` is the
+    # Authorization header value we register with Eneba (via P_registerCallback)
+    # to authenticate inbound callbacks. Leave blank to keep Eneba dormant.
     ENEBA_CLIENT_ID: str | None = None
     ENEBA_AUTH_ID: str | None = None
     ENEBA_API_SECRET: str | None = None
@@ -261,18 +268,21 @@ class Settings(BaseSettings):
         the credentials API. Returns ``None`` when no API key is set for the
         provider (so the encrypted-DB store / mock mode remains in control).
 
-        Eneba is special: it authenticates with OAuth 2.0, so it carries a
-        client id (``api_key``), a secret, and additional values (the
-        authorization id + webhook secret) under ``extra``.
+        Eneba is special: it authenticates with OAuth 2.0 using a seller Auth ID
+        + Auth Secret. The Auth ID is read from ``ENEBA_AUTH_ID`` (falling back
+        to ``ENEBA_CLIENT_ID`` for backwards compatibility) and exposed as
+        ``api_key``; the Auth Secret is ``api_secret``. The fixed OAuth
+        ``client_id`` is supplied separately by the adapter from settings.
         """
         if provider == "eneba":
-            if not self.ENEBA_CLIENT_ID:
+            auth_id = self.ENEBA_AUTH_ID or self.ENEBA_CLIENT_ID
+            if not auth_id:
                 return None
             return {
-                "api_key": self.ENEBA_CLIENT_ID,
+                "api_key": auth_id,
                 "api_secret": self.ENEBA_API_SECRET,
                 "extra": {
-                    "auth_id": self.ENEBA_AUTH_ID,
+                    "auth_id": auth_id,
                     "webhook_secret": self.ENEBA_WEBHOOK_SECRET,
                 },
             }
