@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import parse_qsl
 
 import httpx
 import pytest
@@ -174,6 +175,15 @@ async def test_eneba_oauth_then_graphql_fetch_prices() -> None:
         )
         prices = await adapter.fetch_prices()
     assert token_route.called
+    # The token request sends the FIXED OAuth client_id (not a seller value),
+    # the seller Auth ID in `id`, and the Auth Secret in `secret`.
+    from app.core.config import settings as _settings
+
+    token_form = dict(parse_qsl(token_route.calls.last.request.content.decode()))
+    assert token_form["grant_type"] == "api_consumer"
+    assert token_form["client_id"] == _settings.ENEBA_OAUTH_CLIENT_ID
+    assert token_form["id"] == "auth-id"
+    assert token_form["secret"] == "auth-secret"
     assert len(prices) == 1
     assert prices[0].marketplace_sku == "PROD-1"
     assert prices[0].price == Decimal("10.99")  # minor units (1099) -> major
@@ -245,17 +255,25 @@ def test_env_credentials_fallback() -> None:
 def test_env_credentials_fallback_eneba() -> None:
     from app.core.config import Settings
 
-    # Eneba carries OAuth values + webhook secret under "extra".
+    # Eneba's seller credentials are an Auth ID + Auth Secret. The Auth ID is
+    # exposed as both api_key and extra.auth_id; the fixed OAuth client_id is
+    # NOT a per-seller credential and is supplied by the adapter from settings.
     s = Settings(
-        ENEBA_CLIENT_ID="cid",
         ENEBA_AUTH_ID="aid",
         ENEBA_API_SECRET="sec",
         ENEBA_WEBHOOK_SECRET="wh",
     )
     assert s.env_credentials_for("eneba") == {
-        "api_key": "cid",
+        "api_key": "aid",
         "api_secret": "sec",
         "extra": {"auth_id": "aid", "webhook_secret": "wh"},
     }
-    # No client id → dormant.
-    assert Settings(ENEBA_CLIENT_ID="").env_credentials_for("eneba") is None
+    # Backwards compatibility: the Auth ID may still live in ENEBA_CLIENT_ID.
+    legacy = Settings(ENEBA_CLIENT_ID="aid", ENEBA_API_SECRET="sec")
+    creds = legacy.env_credentials_for("eneba")
+    assert creds is not None
+    assert creds["api_key"] == "aid"
+    assert creds["extra"]["auth_id"] == "aid"
+    # Neither Auth ID source set → dormant.
+    dormant = Settings(ENEBA_CLIENT_ID="", ENEBA_AUTH_ID="")
+    assert dormant.env_credentials_for("eneba") is None
