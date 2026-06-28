@@ -21,10 +21,12 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.integrations import build_adapter, resolve_credentials
 from app.integrations.base import MarketplaceAdapter, NormalizedListing, to_decimal
+from app.models.inventory import InventoryStatus
 from app.models.listing import Listing, ListingStatus
 from app.models.pricing_snapshot import PricingSnapshot
 from app.models.repricing_history import RepricingHistory
 from app.pricing.engine import MarketContext, PricingPolicy, RepricingDecision, decide
+from app.repositories.inventory_repository import InventoryRepository
 from app.repositories.listing_repository import ListingRepository
 from app.repositories.marketplace_price_repository import MarketplacePriceRepository
 from app.repositories.sku_mapping_repository import SkuMappingRepository
@@ -59,6 +61,7 @@ class PricingService:
         self.listings = ListingRepository(session)
         self.prices = MarketplacePriceRepository(session)
         self.mappings = SkuMappingRepository(session)
+        self.inventory = InventoryRepository(session)
         self.policy = PricingPolicy(
             undercut=settings.PRICING_UNDERCUT_AMOUNT,
             min_profit_absolute=settings.PRICING_MIN_PROFIT_ABSOLUTE,
@@ -121,8 +124,15 @@ class PricingService:
         summary: ScanSummary,
     ) -> None:
         ctx, competitors, product_id = await self._context_for(listing)
+
+        # Live count of locally-held deliverable codes (G2G stock sync only).
+        available = await self._available_stock(listing, product_id)
+
         if ctx is None:
-            return  # not enough data to make a safe decision
+            # Not enough data for a safe pricing decision, but we may still need
+            # to push held-inventory stock up to a G2G offer.
+            await self._sync_stock_only(listing, available, dry, adapters, summary)
+            return
 
         decision = decide(ctx)
         summary.decisions += 1
@@ -132,17 +142,16 @@ class PricingService:
 
         await self._record_snapshot(listing, ctx, competitors, product_id)
 
+        price_changed = decision.changed
+        stock_changed = available is not None and available != listing.stock
         applied = False
         error: str | None = None
-        if decision.changed and not dry:
+        if (price_changed or stock_changed) and not dry:
             try:
-                adapter = adapters.get(listing.provider)
-                if adapter is None:
-                    adapter = build_adapter(
-                        listing.provider, resolve_credentials(listing.provider)
-                    )
-                    adapters[listing.provider] = adapter
-                await self._push(adapter, listing, decision)
+                adapter = self._adapter_for(listing.provider, adapters)
+                new_price = decision.new_price if price_changed else listing.price
+                new_stock = available if available is not None else listing.stock
+                await self._push(adapter, listing, price=new_price, stock=new_stock)
                 applied = True
                 summary.applied += 1
             except Exception as exc:  # noqa: BLE001
@@ -154,6 +163,54 @@ class PricingService:
         await self._record_history(
             listing, ctx, decision, product_id, dry, applied, error
         )
+
+    async def _available_stock(
+        self, listing: Listing, product_id: int | None
+    ) -> int | None:
+        """Count of AVAILABLE local codes to mirror as G2G stock, else None.
+
+        Stock-from-inventory is a **G2G-only** behaviour. For any other provider,
+        or when the listing maps to no product, returns ``None`` so the caller
+        leaves marketplace stock untouched (today's behaviour).
+        """
+        if listing.provider != "g2g" or product_id is None:
+            return None
+        return await self.inventory.count_status(
+            product_id, InventoryStatus.AVAILABLE
+        )
+
+    async def _sync_stock_only(
+        self,
+        listing: Listing,
+        available: int | None,
+        dry: bool,
+        adapters: dict[str, MarketplaceAdapter],
+        summary: ScanSummary,
+    ) -> None:
+        """Push held-inventory stock to G2G when no pricing decision was made.
+
+        Fires only when the marketplace stock actually differs from the local
+        AVAILABLE count; preserves the current price (no repricing here).
+        """
+        if available is None or available == listing.stock or dry:
+            return
+        try:
+            adapter = self._adapter_for(listing.provider, adapters)
+            await self._push(adapter, listing, price=listing.price, stock=available)
+            summary.applied += 1
+        except Exception as exc:  # noqa: BLE001
+            summary.errors.append(
+                f"{listing.provider}:{listing.marketplace_sku}: push failed: {exc}"
+            )
+
+    def _adapter_for(
+        self, provider: str, adapters: dict[str, MarketplaceAdapter]
+    ) -> MarketplaceAdapter:
+        adapter = adapters.get(provider)
+        if adapter is None:
+            adapter = build_adapter(provider, resolve_credentials(provider))
+            adapters[provider] = adapter
+        return adapter
 
     async def _context_for(
         self, listing: Listing
@@ -309,21 +366,25 @@ class PricingService:
         self,
         adapter: MarketplaceAdapter,
         listing: Listing,
-        decision: RepricingDecision,
+        *,
+        price: Decimal | None,
+        stock: int,
     ) -> None:
-        """Push the new price; keep the listing live (never unlist)."""
+        """Push price and/or stock; keep the listing live (never unlist)."""
         await adapter.push_listing(
             NormalizedListing(
                 marketplace_sku=listing.marketplace_sku,
                 external_listing_id=listing.external_listing_id,
                 title=listing.title,
-                price=decision.new_price,
+                price=price,
                 currency=listing.currency or settings.BASE_CURRENCY,
-                stock=listing.stock,
+                stock=stock,
                 status="active",
             )
         )
-        listing.price = decision.new_price
+        if price is not None:
+            listing.price = price
+        listing.stock = stock
         listing.status = ListingStatus.ACTIVE  # never deactivate
         listing.last_synced_at = utcnow()
         listing.sync_error = None
