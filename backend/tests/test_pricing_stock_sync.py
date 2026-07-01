@@ -36,6 +36,12 @@ G2G_BASE_URL = "https://open-api.g2g.com"
 OFFER_ID = "G2G-OFFER-1"
 STATIC_RATES = {"EUR": Decimal("1"), "USD": Decimal("1.20")}
 
+ENEBA_BASE_URL = "https://api.eneba.com"
+ENEBA_GRAPHQL_URL = f"{ENEBA_BASE_URL}/graphql/"
+ENEBA_OAUTH_URL = "https://user.eneba.com/oauth/token"
+ENEBA_PRODUCT_SKU = "ENB-PRODUCT-1"
+ENEBA_AUCTION_ID = "ENB-AUCTION-1"
+
 
 @pytest.fixture
 def currency() -> CurrencyService:
@@ -49,6 +55,19 @@ def g2g_live(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(settings, "G2G_API_KEY", "test-key")
     monkeypatch.setattr(settings, "G2G_API_SECRET", "test-secret")
     monkeypatch.setattr(settings, "G2G_API_BASE_URL", G2G_BASE_URL)
+    yield
+
+
+@pytest.fixture
+def eneba_live(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run the scan against a LIVE, credentialed Eneba adapter."""
+    monkeypatch.setattr(settings, "MARKETPLACE_MODE", "live")
+    monkeypatch.setattr(settings, "ENEBA_CLIENT_ID", "test-auth-id")
+    monkeypatch.setattr(settings, "ENEBA_AUTH_ID", None)
+    monkeypatch.setattr(settings, "ENEBA_API_SECRET", "test-secret")
+    monkeypatch.setattr(settings, "ENEBA_API_BASE_URL", ENEBA_BASE_URL)
+    monkeypatch.setattr(settings, "ENEBA_OAUTH_TOKEN_URL", ENEBA_OAUTH_URL)
+    monkeypatch.setattr(settings, "ENEBA_OAUTH_CLIENT_ID", "fixed-client")
     yield
 
 
@@ -158,6 +177,47 @@ async def _seed_priced(*, listing_stock: int, available: int) -> None:
         await s.commit()
 
 
+async def _seed_eneba_inventory_only(*, listing_stock: int, available: int) -> None:
+    """An Eneba listing (existing auction) mapped to a product with held codes.
+
+    No marketplace prices and no listing price, so the only thing the scan can
+    do is mirror the held-code count up to the Eneba auction as stock.
+    """
+    await _wipe()
+    async with AsyncSessionLocal() as s:
+        product = Product(name="Eneba Game", internal_sku="ENB-1")
+        s.add(product)
+        await s.flush()
+        pid = product.id
+        s.add(
+            SkuMapping(
+                product_id=pid, marketplace="eneba", marketplace_sku=ENEBA_PRODUCT_SKU
+            )
+        )
+        for i in range(available):
+            s.add(
+                Inventory(
+                    product_id=pid,
+                    code=f"ECODE-{i}",
+                    status=InventoryStatus.AVAILABLE,
+                )
+            )
+        s.add(
+            Listing(
+                provider="eneba",
+                marketplace_sku=ENEBA_PRODUCT_SKU,
+                external_listing_id=ENEBA_AUCTION_ID,
+                product_id=pid,
+                title="Eneba Game",
+                price=None,
+                currency="EUR",
+                stock=listing_stock,
+                status=ListingStatus.INACTIVE,
+            )
+        )
+        await s.commit()
+
+
 def _patch_route(router: respx.Router) -> respx.Route:
     return router.patch(f"/v2/offers/{OFFER_ID}").mock(
         return_value=httpx.Response(
@@ -166,10 +226,10 @@ def _patch_route(router: respx.Router) -> respx.Route:
     )
 
 
-async def _get_listing() -> Listing:
+async def _get_listing(provider: str = "g2g") -> Listing:
     async with AsyncSessionLocal() as s:
         return (
-            await s.execute(select(Listing).where(Listing.provider == "g2g"))
+            await s.execute(select(Listing).where(Listing.provider == provider))
         ).scalar_one()
 
 
@@ -322,3 +382,36 @@ async def test_dry_run_records_history_without_pushing(
     listing = await _get_listing()
     assert listing.stock == 0  # untouched in dry run
     assert Decimal(listing.price) == Decimal("20.00")
+
+
+@pytest.mark.asyncio
+async def test_eneba_stock_up_pushes_available_count(
+    currency: CurrencyService, eneba_live: None
+) -> None:
+    """Inventory→stock sync is provider-agnostic: an Eneba auction gets the
+    held-code count pushed as stock, exactly like G2G."""
+    await _seed_eneba_inventory_only(listing_stock=0, available=3)
+
+    with respx.mock(assert_all_called=False) as router:
+        router.post(ENEBA_OAUTH_URL).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "tok", "expires_in": 3600}
+            )
+        )
+        gql = router.post(ENEBA_GRAPHQL_URL).mock(
+            return_value=httpx.Response(
+                200, json={"data": {"S_updateAuction": {"id": "action-1"}}}
+            )
+        )
+        async with AsyncSessionLocal() as s:
+            await PricingService(s, currency=currency).scan(
+                provider="eneba", dry_run=False
+            )
+
+    assert gql.called
+    body = json.loads(gql.calls.last.request.content)
+    assert body["variables"]["input"]["stock"] == 3
+
+    listing = await _get_listing("eneba")
+    assert listing.stock == 3
+    assert listing.status is ListingStatus.ACTIVE

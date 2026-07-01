@@ -125,12 +125,13 @@ class PricingService:
     ) -> None:
         ctx, competitors, product_id = await self._context_for(listing)
 
-        # Live count of locally-held deliverable codes (G2G stock sync only).
+        # Live count of locally-held deliverable codes, mirrored to the
+        # marketplace as stock (G2G, Eneba, or any sell-side provider).
         available = await self._available_stock(listing, product_id)
 
         if ctx is None:
             # Not enough data for a safe pricing decision, but we may still need
-            # to push held-inventory stock up to a G2G offer.
+            # to push held-inventory stock up to the marketplace listing.
             await self._sync_stock_only(listing, available, dry, adapters, summary)
             return
 
@@ -167,13 +168,19 @@ class PricingService:
     async def _available_stock(
         self, listing: Listing, product_id: int | None
     ) -> int | None:
-        """Count of AVAILABLE local codes to mirror as G2G stock, else None.
+        """Count of AVAILABLE local codes to mirror as marketplace stock, else None.
 
-        Stock-from-inventory is a **G2G-only** behaviour. For any other provider,
-        or when the listing maps to no product, returns ``None`` so the caller
-        leaves marketplace stock untouched (today's behaviour).
+        Provider-agnostic: we push the held-code count up to whichever
+        marketplace the listing sells on (G2G, Eneba, or any future sell-side
+        provider). Returns ``None`` when the listing maps to no product, so the
+        caller leaves marketplace stock untouched.
+
+        Note: this only ever runs against rows in the ``listings`` table, which
+        holds *sell-side* listings. Source-only marketplaces (e.g. Kinguin, which
+        the bot buys from and never sells on) surface no listings, so they are
+        naturally inert here.
         """
-        if listing.provider != "g2g" or product_id is None:
+        if product_id is None:
             return None
         return await self.inventory.count_status(
             product_id, InventoryStatus.AVAILABLE
