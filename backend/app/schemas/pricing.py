@@ -16,6 +16,11 @@ class ScanSummary(BaseModel):
     scanned: int = Field(ge=0, description="Listings examined.")
     decisions: int = Field(ge=0, description="Repricing decisions recorded.")
     applied: int = Field(ge=0, description="Prices actually pushed to a marketplace.")
+    retired: int = Field(
+        default=0,
+        ge=0,
+        description="Listings auto-retired because their remote offer was deleted (404/410).",
+    )
     by_strategy: dict[str, int] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
 

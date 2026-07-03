@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.integrations import build_adapter, resolve_credentials
 from app.integrations.base import MarketplaceAdapter, NormalizedListing, to_decimal
+from app.integrations.exceptions import ProviderAPIError
 from app.models.inventory import InventoryStatus
 from app.models.listing import Listing, ListingStatus
 from app.models.pricing_snapshot import PricingSnapshot
@@ -39,6 +40,11 @@ log = get_logger(__name__)
 
 _MONEY = Decimal("0.01")
 _RATE = Decimal("0.0001")
+
+#: A push failing with one of these means the remote offer no longer exists, so
+#: there is nothing to sync to. We retire the listing locally instead of raising
+#: the same error on every scan forever.
+_OFFER_GONE_STATUS = frozenset({404, 410})
 
 
 def _money(value: Decimal | None) -> Decimal | None:
@@ -88,6 +94,10 @@ class PricingService:
         adapters: dict[str, MarketplaceAdapter] = {}
         try:
             for listing in listings:
+                if listing.status is ListingStatus.REMOVED:
+                    # Remote offer was deleted and the listing was auto-retired;
+                    # skip it so it never re-triggers the same 404.
+                    continue
                 summary.scanned += 1
                 try:
                     await self._reprice(listing, dry, adapters, summary)
@@ -148,18 +158,15 @@ class PricingService:
         applied = False
         error: str | None = None
         if (price_changed or stock_changed) and not dry:
-            try:
-                adapter = self._adapter_for(listing.provider, adapters)
-                new_price = decision.new_price if price_changed else listing.price
-                new_stock = available if available is not None else listing.stock
-                await self._push(adapter, listing, price=new_price, stock=new_stock)
-                applied = True
-                summary.applied += 1
-            except Exception as exc:  # noqa: BLE001
-                error = str(exc)
-                summary.errors.append(
-                    f"{listing.provider}:{listing.marketplace_sku}: push failed: {exc}"
-                )
+            new_price = decision.new_price if price_changed else listing.price
+            new_stock = available if available is not None else listing.stock
+            applied, error = await self._attempt_push(
+                listing,
+                price=new_price,
+                stock=new_stock,
+                adapters=adapters,
+                summary=summary,
+            )
 
         await self._record_history(
             listing, ctx, decision, product_id, dry, applied, error
@@ -201,14 +208,69 @@ class PricingService:
         """
         if available is None or available == listing.stock or dry:
             return
+        await self._attempt_push(
+            listing,
+            price=listing.price,
+            stock=available,
+            adapters=adapters,
+            summary=summary,
+        )
+
+    async def _attempt_push(
+        self,
+        listing: Listing,
+        *,
+        price: Decimal | None,
+        stock: int,
+        adapters: dict[str, MarketplaceAdapter],
+        summary: ScanSummary,
+    ) -> tuple[bool, str | None]:
+        """Push price/stock to the marketplace, isolating per-listing failures.
+
+        Returns ``(applied, error)``. A push to an offer that no longer exists
+        (HTTP 404/410) retires the listing locally (see :meth:`_retire_listing`)
+        and is deliberately NOT reported as a scan error, so a single stale
+        offer can never block stock updates for the rest of the batch. Any other
+        failure is surfaced in ``summary.errors`` as before.
+        """
         try:
             adapter = self._adapter_for(listing.provider, adapters)
-            await self._push(adapter, listing, price=listing.price, stock=available)
+            await self._push(adapter, listing, price=price, stock=stock)
             summary.applied += 1
+            return True, None
+        except ProviderAPIError as exc:
+            if exc.status_code in _OFFER_GONE_STATUS:
+                self._retire_listing(listing, exc.status_code)
+                summary.retired += 1
+                log.info(
+                    "pricing.listing_retired",
+                    provider=listing.provider,
+                    sku=listing.marketplace_sku,
+                    status_code=exc.status_code,
+                )
+                return False, None
+            error = str(exc)
         except Exception as exc:  # noqa: BLE001
-            summary.errors.append(
-                f"{listing.provider}:{listing.marketplace_sku}: push failed: {exc}"
-            )
+            error = str(exc)
+        summary.errors.append(
+            f"{listing.provider}:{listing.marketplace_sku}: push failed: {error}"
+        )
+        return False, error
+
+    def _retire_listing(self, listing: Listing, status_code: int | None) -> None:
+        """Retire a listing whose remote offer was deleted (404/410).
+
+        There is nothing to sync to, so we mark it REMOVED and zero its stock.
+        The scan skips REMOVED listings, so this stops the recurring error until
+        the operator recreates the offer (which re-imports as a fresh listing).
+        """
+        listing.status = ListingStatus.REMOVED
+        listing.stock = 0
+        listing.sync_error = (
+            f"Remote offer no longer exists (HTTP {status_code}); listing "
+            "auto-retired. Recreate the offer on the marketplace to resume syncing."
+        )
+        listing.last_synced_at = utcnow()
 
     def _adapter_for(
         self, provider: str, adapters: dict[str, MarketplaceAdapter]

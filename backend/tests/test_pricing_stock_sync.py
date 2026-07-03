@@ -34,6 +34,7 @@ from app.services.pricing_service import PricingService
 
 G2G_BASE_URL = "https://open-api.g2g.com"
 OFFER_ID = "G2G-OFFER-1"
+DEAD_OFFER_ID = "G2G-DELETED-OFFER"
 STATIC_RATES = {"EUR": Decimal("1"), "USD": Decimal("1.20")}
 
 ENEBA_BASE_URL = "https://api.eneba.com"
@@ -214,6 +215,73 @@ async def _seed_eneba_inventory_only(*, listing_stock: int, available: int) -> N
                 stock=listing_stock,
                 status=ListingStatus.INACTIVE,
             )
+        )
+        await s.commit()
+
+
+async def _seed_two_listings_one_dead(*, available: int) -> None:
+    """Two mapped G2G listings, each with held codes: one live, one whose remote
+    offer has been deleted (its PATCH will 404). Mirrors the operator's real
+    dashboard: a stale deleted offer sitting alongside a freshly-set-up one.
+    """
+    await _wipe()
+    async with AsyncSessionLocal() as s:
+        good = Product(name="Good Game", internal_sku="GOOD-1")
+        dead = Product(name="Dead Game", internal_sku="DEAD-1")
+        s.add_all([good, dead])
+        await s.flush()
+        s.add_all(
+            [
+                SkuMapping(
+                    product_id=good.id, marketplace="g2g", marketplace_sku=OFFER_ID
+                ),
+                SkuMapping(
+                    product_id=dead.id,
+                    marketplace="g2g",
+                    marketplace_sku=DEAD_OFFER_ID,
+                ),
+            ]
+        )
+        for i in range(available):
+            s.add(
+                Inventory(
+                    product_id=good.id,
+                    code=f"GOOD-{i}",
+                    status=InventoryStatus.AVAILABLE,
+                )
+            )
+            s.add(
+                Inventory(
+                    product_id=dead.id,
+                    code=f"DEAD-{i}",
+                    status=InventoryStatus.AVAILABLE,
+                )
+            )
+        s.add_all(
+            [
+                Listing(
+                    provider="g2g",
+                    marketplace_sku=OFFER_ID,
+                    external_listing_id=OFFER_ID,
+                    product_id=good.id,
+                    title="Good Game",
+                    price=None,
+                    currency="EUR",
+                    stock=0,
+                    status=ListingStatus.INACTIVE,
+                ),
+                Listing(
+                    provider="g2g",
+                    marketplace_sku=DEAD_OFFER_ID,
+                    external_listing_id=DEAD_OFFER_ID,
+                    product_id=dead.id,
+                    title="Dead Game",
+                    price=None,
+                    currency="EUR",
+                    stock=0,
+                    status=ListingStatus.INACTIVE,
+                ),
+            ]
         )
         await s.commit()
 
@@ -415,3 +483,126 @@ async def test_eneba_stock_up_pushes_available_count(
     listing = await _get_listing("eneba")
     assert listing.stock == 3
     assert listing.status is ListingStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_deleted_offer_404_auto_retires(
+    currency: CurrencyService, g2g_live: None
+) -> None:
+    """A push to a deleted remote offer (404) retires the listing locally and is
+    NOT reported as a scan error — it must never block the rest of the batch."""
+    await _seed_inventory_only(listing_stock=0, available=3)
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        route = router.patch(f"/v2/offers/{OFFER_ID}").mock(
+            return_value=httpx.Response(404, json={"error": "offer not found"})
+        )
+        async with AsyncSessionLocal() as s:
+            summary = await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    assert route.called
+    assert summary.errors == []  # 404 is not a hard error
+    assert summary.applied == 0
+    assert summary.retired == 1
+
+    listing = await _get_listing()
+    assert listing.status is ListingStatus.REMOVED
+    assert listing.stock == 0
+    assert listing.sync_error and "404" in listing.sync_error
+
+
+@pytest.mark.asyncio
+async def test_removed_listing_skipped_on_next_scan(
+    currency: CurrencyService, g2g_live: None
+) -> None:
+    """Once retired (404), a listing is skipped entirely on subsequent scans —
+    no repeat push, no repeat error."""
+    await _seed_inventory_only(listing_stock=0, available=3)
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        router.patch(f"/v2/offers/{OFFER_ID}").mock(
+            return_value=httpx.Response(404, json={})
+        )
+        async with AsyncSessionLocal() as s:
+            await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        route = router.patch(url__regex=r".*").mock(
+            return_value=httpx.Response(200, json={"payload": {}})
+        )
+        async with AsyncSessionLocal() as s:
+            summary = await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    assert not route.called
+    assert summary.scanned == 0  # the only listing is retired and skipped
+
+
+@pytest.mark.asyncio
+async def test_non_gone_push_error_still_reported(
+    currency: CurrencyService, g2g_live: None
+) -> None:
+    """A genuine push error (e.g. 400) is still surfaced and does NOT retire the
+    listing — we only auto-retire on 'offer gone' (404/410)."""
+    await _seed_inventory_only(listing_stock=0, available=3)
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        router.patch(f"/v2/offers/{OFFER_ID}").mock(
+            return_value=httpx.Response(400, json={"error": "bad request"})
+        )
+        async with AsyncSessionLocal() as s:
+            summary = await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    assert summary.errors  # real errors are not swallowed
+    assert summary.retired == 0
+
+    listing = await _get_listing()
+    assert listing.status is not ListingStatus.REMOVED
+
+
+@pytest.mark.asyncio
+async def test_deleted_offer_does_not_block_healthy_listing(
+    currency: CurrencyService, g2g_live: None
+) -> None:
+    """The operator's exact scenario: one stale deleted offer (404) sitting next
+    to a freshly-configured live listing. The healthy one must still sync."""
+    await _seed_two_listings_one_dead(available=6)
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        good = router.patch(f"/v2/offers/{OFFER_ID}").mock(
+            return_value=httpx.Response(200, json={"payload": {"offer_id": OFFER_ID}})
+        )
+        dead = router.patch(f"/v2/offers/{DEAD_OFFER_ID}").mock(
+            return_value=httpx.Response(404, json={"error": "offer not found"})
+        )
+        async with AsyncSessionLocal() as s:
+            summary = await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    assert good.called
+    assert dead.called
+    assert summary.applied == 1  # the healthy listing still pushed
+    assert summary.errors == []  # the dead one was retired, not errored
+
+    async with AsyncSessionLocal() as s:
+        good_listing = (
+            await s.execute(select(Listing).where(Listing.marketplace_sku == OFFER_ID))
+        ).scalar_one()
+        dead_listing = (
+            await s.execute(
+                select(Listing).where(Listing.marketplace_sku == DEAD_OFFER_ID)
+            )
+        ).scalar_one()
+
+    assert good_listing.stock == 6
+    assert good_listing.status is ListingStatus.ACTIVE
+    assert dead_listing.status is ListingStatus.REMOVED
+    assert dead_listing.stock == 0

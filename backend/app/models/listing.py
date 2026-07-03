@@ -30,6 +30,7 @@ class ListingStatus(str, enum.Enum):
     INACTIVE = "inactive"  # delisted / paused
     SYNCED = "synced"  # last push to the marketplace succeeded
     ERROR = "error"  # last sync attempt failed (see sync_error)
+    REMOVED = "removed"  # remote offer no longer exists (404/410); auto-retired
 
 
 class Listing(TimestampedMixin, Base):
