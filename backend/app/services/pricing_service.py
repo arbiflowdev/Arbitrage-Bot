@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.integrations import build_adapter, resolve_credentials
+from app.integrations import (
+    SUPPORTED_PROVIDERS,
+    build_adapter,
+    resolve_credentials,
+)
 from app.integrations.base import MarketplaceAdapter, NormalizedListing, to_decimal
 from app.integrations.exceptions import ProviderAPIError
 from app.models.inventory import InventoryStatus
@@ -82,6 +86,8 @@ class PricingService:
     ) -> ScanSummary:
         """Run one repricing pass over every live listing."""
         dry = settings.PRICING_DRY_RUN if dry_run is None else dry_run
+        if settings.PRICING_SYNC_LISTINGS_BEFORE_SCAN:
+            await self._import_listings(provider)
         listings = await self.listings.list_by_provider(provider, limit=1000)
 
         summary = ScanSummary(
@@ -124,6 +130,38 @@ class PricingService:
             dry_run=dry,
         )
         return summary
+
+    async def _import_listings(self, provider: str | None) -> None:
+        """Import the marketplace's current offers into the ``listings`` table
+        before scanning, so a freshly-created offer is picked up automatically
+        (no manual "sync listings" per product).
+
+        Runs for the scanned provider, or every supported provider when scanning
+        all. Any failure here (edge block, credentials, provider down) is
+        swallowed and logged — importing is best-effort and must never block
+        repricing of the listings we already know about.
+        """
+        # Imported here to avoid a module-level import cycle between the pricing
+        # and marketplace services.
+        from app.services.marketplace_service import MarketplaceService
+
+        providers = [provider] if provider else list(SUPPORTED_PROVIDERS)
+        service = MarketplaceService(self.session)
+        for prov in providers:
+            try:
+                result = await service.sync_listings(prov)
+                log.info(
+                    "pricing.listings_imported",
+                    provider=prov,
+                    fetched=result.fetched,
+                    upserted=result.upserted,
+                )
+            except Exception as exc:  # noqa: BLE001 — never block the scan
+                log.info(
+                    "pricing.listings_import_skipped",
+                    provider=prov,
+                    error=str(exc),
+                )
 
     # ---- per-listing ------------------------------------------------------
     async def _reprice(

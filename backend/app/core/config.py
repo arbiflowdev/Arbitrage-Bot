@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     # When True the engine computes and records decisions but never pushes a
     # price change to the marketplace — a safe "preview" mode for first runs.
     PRICING_DRY_RUN: bool = False
+    # When True, every scan first imports the marketplace's current offers into
+    # the listings table (a listings sync) so a newly-created offer is picked up
+    # automatically — no manual "sync listings" step per product. Import failures
+    # are swallowed and never block repricing of already-known listings.
+    PRICING_SYNC_LISTINGS_BEFORE_SCAN: bool = True
 
     # Strategy thresholds (the client's "financial red line" and tactics).
     PRICING_UNDERCUT_AMOUNT: Decimal = Decimal("0.01")

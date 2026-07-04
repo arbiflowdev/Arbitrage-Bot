@@ -19,6 +19,10 @@ os.environ.setdefault("LOG_JSON", "false")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
 # Marketplace integrations: run in mock mode (no API keys needed).
 os.environ.setdefault("MARKETPLACE_MODE", "mock")
+# Keep the pre-scan listings auto-import OFF by default in tests so suites that
+# seed listings directly aren't forced to mock the offer-search endpoint. Tests
+# that exercise the auto-import opt in explicitly.
+os.environ.setdefault("PRICING_SYNC_LISTINGS_BEFORE_SCAN", "false")
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
