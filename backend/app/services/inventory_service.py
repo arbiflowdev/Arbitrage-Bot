@@ -35,10 +35,24 @@ class InventoryService:
         *,
         batch_id: str | None = None,
     ) -> UploadSummary:
-        """Parse an upload and persist each new code as AVAILABLE inventory."""
+        """Parse an upload and persist each new code as AVAILABLE inventory.
+
+        Codes already held for this product (in any status) are skipped rather
+        than inserted again: re-uploading the same list must not create duplicate
+        AVAILABLE rows, since the repricer mirrors the AVAILABLE count to the
+        marketplace as stock and duplicates would silently over-advertise it.
+        """
         parsed = parse_inventory(content, fmt)
         bid = batch_id or uuid.uuid4().hex
-        for item in parsed.items:
+
+        # Drop codes we already hold (cross-batch dedup — the parser only
+        # de-duplicates within a single upload).
+        already = await self.repo.existing_codes(
+            product_id, [item.code for item in parsed.items]
+        )
+        fresh = [item for item in parsed.items if item.code not in already]
+
+        for item in fresh:
             self.session.add(
                 Inventory(
                     product_id=product_id,
@@ -53,17 +67,20 @@ class InventoryService:
                 )
             )
         await self.session.flush()
+        # "duplicates" = codes not added because we already have them, whether
+        # they repeated within the file (parser) or were already in stock (DB).
+        duplicates = parsed.duplicates + len(already)
         log.info(
             "inventory.upload",
             product_id=product_id,
-            added=len(parsed.items),
-            duplicates=parsed.duplicates,
+            added=len(fresh),
+            duplicates=duplicates,
             skipped=parsed.skipped_blank,
             batch_id=bid,
         )
         return UploadSummary(
-            added=len(parsed.items),
-            duplicates=parsed.duplicates,
+            added=len(fresh),
+            duplicates=duplicates,
             skipped=parsed.skipped_blank,
             batch_id=bid,
         )

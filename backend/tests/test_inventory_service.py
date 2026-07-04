@@ -43,6 +43,52 @@ async def test_upload_txt_creates_available_inventory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reupload_skips_codes_already_in_stock() -> None:
+    """Re-uploading a code that already exists for the product must NOT create a
+    second AVAILABLE row — that silent duplication is what inflated the pushed
+    stock (168 real codes advertised as ~1.3k). Only genuinely new codes are
+    added; the overlap is reported as duplicates."""
+    pid = await _fresh_product()
+    async with AsyncSessionLocal() as s:
+        await InventoryService(s).upload(pid, "K1\nK2\n", "txt")
+        await s.commit()
+
+    async with AsyncSessionLocal() as s:
+        summary = await InventoryService(s).upload(pid, "K2\nK3\n", "txt")
+        await s.commit()
+
+    assert summary.added == 1  # only K3 is new
+    assert summary.duplicates == 1  # K2 already held
+    async with AsyncSessionLocal() as s:
+        assert await InventoryService(s).available_count(pid) == 3  # K1, K2, K3
+
+
+@pytest.mark.asyncio
+async def test_reupload_does_not_resurrect_sold_code() -> None:
+    """A code already SOLD must not be re-added as AVAILABLE on re-upload —
+    otherwise the bot would advertise (and could oversell) a spent code."""
+    pid = await _fresh_product()
+    async with AsyncSessionLocal() as s:
+        await InventoryService(s).upload(pid, "SOLD-1\n", "txt")
+        await s.commit()
+    async with AsyncSessionLocal() as s:
+        svc = InventoryService(s)
+        item = await svc.reserve_one(pid, order_id=7)
+        await s.commit()
+        await svc.mark_sold(item.id)
+        await s.commit()
+
+    async with AsyncSessionLocal() as s:
+        summary = await InventoryService(s).upload(pid, "SOLD-1\n", "txt")
+        await s.commit()
+
+    assert summary.added == 0
+    assert summary.duplicates == 1
+    async with AsyncSessionLocal() as s:
+        assert await InventoryService(s).available_count(pid) == 0
+
+
+@pytest.mark.asyncio
 async def test_reserve_one_claims_distinct_available_items() -> None:
     pid = await _fresh_product()
     async with AsyncSessionLocal() as s:
