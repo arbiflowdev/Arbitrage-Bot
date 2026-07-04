@@ -1,14 +1,5 @@
 """Arbitrage / dynamic-pricing orchestration.
 
-Assembles a :class:`~app.pricing.engine.MarketContext` for each of our live
-listings, runs the pure decision engine, records a snapshot + a history row,
-and (unless in dry-run) pushes the new price to the marketplace. The engine
-NEVER unlists: a listing is only ever repriced or frozen, never deactivated.
-
-Source cost is the cheapest acquisition price found on *other* marketplaces for
-the same product (linked via ``sku_mappings``). Competitors are the offers on
-the *destination* marketplace. All amounts are converted to the base currency
-(EUR) with the FX safety buffer before the engine sees them.
 """
 
 from __future__ import annotations
@@ -44,10 +35,6 @@ log = get_logger(__name__)
 
 _MONEY = Decimal("0.01")
 _RATE = Decimal("0.0001")
-
-#: A push failing with one of these means the remote offer no longer exists, so
-#: there is nothing to sync to. We retire the listing locally instead of raising
-#: the same error on every scan forever.
 _OFFER_GONE_STATUS = frozenset({404, 410})
 
 
@@ -352,7 +339,17 @@ class PricingService:
                             row.currency or settings.provider_currency(m.marketplace),
                         )
                     )
-        source_cost = min(source_prices) if source_prices else dest_base
+        # Source cost is what we PAY to acquire on another marketplace — never
+        # our own selling price. Falling back to ``dest_base`` (this listing's
+        # own destination price) is catastrophic: ``minimum_safe_price`` returns
+        # ``source_cost / (k - margin)`` — strictly above the current price — so
+        # the pushed price is stored back into ``listing.price`` and becomes the
+        # next scan's "cost", ratcheting the price up geometrically every scan.
+        # With no genuine source cost we have no basis to judge profitability, so
+        # we return no context: the listing is frozen (price untouched) and only
+        # its stock is mirrored. Repricing resumes once a real source mapping/
+        # price exists for the product.
+        source_cost = min(source_prices) if source_prices else None
         if source_cost is None:
             return None, [], product_id
 
