@@ -378,6 +378,56 @@ async def test_unmapped_listing_makes_no_call(
 
 
 @pytest.mark.asyncio
+async def test_enforce_backed_stock_zeros_unmapped_listing(
+    currency: CurrencyService, g2g_live: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With PRICING_ENFORCE_BACKED_STOCK on, a listing the bot can't back (no
+    product mapping / no local codes) must NOT keep advertising the marketplace's
+    own quantity — the bot is the source of truth, so it pushes 0 to stop selling
+    codes it cannot deliver. This is the strict guard for the '168 real vs 1.3k
+    advertised' situation where the offer wasn't mapped to inventory at all."""
+    monkeypatch.setattr(settings, "PRICING_ENFORCE_BACKED_STOCK", True)
+    await _wipe()
+    async with AsyncSessionLocal() as s:
+        s.add(
+            Listing(
+                provider="g2g",
+                marketplace_sku="UNMAPPED-OFFER",
+                external_listing_id="UNMAPPED-OFFER",
+                product_id=None,
+                title="Orphan",
+                price=None,
+                currency="EUR",
+                stock=1670,  # G2G's own phantom quantity the bot never set
+                status=ListingStatus.ACTIVE,
+            )
+        )
+        await s.commit()
+
+    with respx.mock(base_url=G2G_BASE_URL, assert_all_called=False) as router:
+        route = router.patch(url__regex=r".*").mock(
+            return_value=httpx.Response(200, json={"payload": {}})
+        )
+        async with AsyncSessionLocal() as s:
+            summary = await PricingService(s, currency=currency).scan(
+                provider="g2g", dry_run=False
+            )
+
+    assert route.called
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["api_qty"] == 0  # phantom stock zeroed out
+    assert summary.errors == []
+
+    async with AsyncSessionLocal() as s:
+        listing = (
+            await s.execute(
+                select(Listing).where(Listing.marketplace_sku == "UNMAPPED-OFFER")
+            )
+        ).scalar_one()
+    assert listing.stock == 0
+
+
+@pytest.mark.asyncio
 async def test_depletion_pushes_lower_count(
     currency: CurrencyService, g2g_live: None
 ) -> None:

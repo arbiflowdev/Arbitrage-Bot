@@ -211,9 +211,14 @@ class PricingService:
         holds *sell-side* listings. Source-only marketplaces (e.g. Kinguin, which
         the bot buys from and never sells on) surface no listings, so they are
         naturally inert here.
+
+        When ``PRICING_ENFORCE_BACKED_STOCK`` is on, an unmapped listing is not
+        left alone but forced to 0: the bot is the source of truth, so an offer
+        with no local codes behind it must not keep advertising the marketplace's
+        own quantity (which the bot cannot deliver against).
         """
         if product_id is None:
-            return None
+            return 0 if settings.PRICING_ENFORCE_BACKED_STOCK else None
         return await self.inventory.count_status(
             product_id, InventoryStatus.AVAILABLE
         )

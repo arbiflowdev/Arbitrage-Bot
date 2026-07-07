@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # automatically — no manual "sync listings" step per product. Import failures
     # are swallowed and never block repricing of already-known listings.
     PRICING_SYNC_LISTINGS_BEFORE_SCAN: bool = True
+    # When True, the bot is treated as the strict source of truth for stock: a
+    # sell listing it cannot back with local deliverable codes (no product
+    # mapping, or a mapped product with 0 AVAILABLE codes) is pushed to stock 0
+    # rather than left advertising the marketplace's own quantity. This stops the
+    # bot from selling codes it cannot deliver, but WILL zero out any live offer
+    # that has no inventory uploaded yet — so keep it OFF until every offer is
+    # mapped and its codes are loaded, then turn it on.
+    PRICING_ENFORCE_BACKED_STOCK: bool = False
 
     # Strategy thresholds (the client's "financial red line" and tactics).
     PRICING_UNDERCUT_AMOUNT: Decimal = Decimal("0.01")
