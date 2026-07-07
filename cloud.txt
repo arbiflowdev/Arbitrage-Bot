@@ -3,3 +3,10 @@
  cd /root/arbitrage/deploy
    cd <that-folder>/deploy
   bash deploy.sh
+    cd /root/arbitrage
+  nano deploy/.env
+    # 2. Restart so the container picks up the new value
+  docker compose -f deploy/docker-compose.yml up -d
+    To confirm it took effect, check the logs — scans will now log dry_run=true and stop pushing:
+
+  docker compose -f deploy/docker-compose.yml logs -f --tail=50 app | grep pricing.scan_complete

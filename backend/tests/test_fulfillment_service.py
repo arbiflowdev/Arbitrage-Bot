@@ -13,6 +13,7 @@ from app.integrations.mock import MockAdapter
 from app.models.inventory import Inventory, InventoryStatus
 from app.models.marketplace_price import MarketplacePrice
 from app.models.order import FulfillmentSource, Order, OrderStatus
+from app.models.order_item import OrderItem
 from app.models.product import Product
 from app.models.sku_mapping import SkuMapping
 from app.models.transaction import Transaction
@@ -34,6 +35,7 @@ async def _wipe() -> None:
         for model in (
             Transaction,
             WalletBalance,
+            OrderItem,
             Inventory,
             Order,
             MarketplacePrice,

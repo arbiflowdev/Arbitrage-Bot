@@ -12,6 +12,7 @@ from app.models.listing import Listing, ListingStatus
 from app.models.log import Log, LogLevel
 from app.models.marketplace_price import MarketplacePrice
 from app.models.order import FulfillmentSource, Order, OrderStatus
+from app.models.order_item import OrderItem, OrderItemStatus
 from app.models.pricing_snapshot import PricingSnapshot
 from app.models.product import Product
 from app.models.repricing_history import RepricingHistory
@@ -37,6 +38,8 @@ __all__ = [
     "LogLevel",
     "MarketplacePrice",
     "Order",
+    "OrderItem",
+    "OrderItemStatus",
     "OrderStatus",
     "PricingSnapshot",
     "Product",
