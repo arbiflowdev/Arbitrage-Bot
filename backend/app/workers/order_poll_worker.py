@@ -71,11 +71,9 @@ class OrderPollWorker:
             if not await lock.acquire():
                 return
             try:
-                ingested = 0
                 async with AsyncSessionLocal() as session:
                     intake = OrderIntakeService(session)
-                    for provider in SUPPORTED_PROVIDERS:
-                        ingested += await self._poll_provider(provider, intake)
+                    ingested = await self._poll_all(intake)
                     await session.commit()
                 if ingested:
                     log.info("fulfillment.poll", ingested=ingested)
@@ -86,6 +84,22 @@ class OrderPollWorker:
                     pass
         except Exception as exc:  # noqa: BLE001 — never let the loop die
             log.warning("fulfillment.poll_failed", error=str(exc))
+
+    async def _poll_all(self, intake: OrderIntakeService) -> int:
+        """Poll every provider, isolating failures so one bad marketplace does
+        not abort the others. An expired Kinguin key returning HTTP 401 must not
+        stop the G2G/Eneba safety-net poll from running."""
+        ingested = 0
+        for provider in SUPPORTED_PROVIDERS:
+            try:
+                ingested += await self._poll_provider(provider, intake)
+            except Exception as exc:  # noqa: BLE001 — one provider must not break the rest
+                log.warning(
+                    "fulfillment.poll_provider_failed",
+                    provider=provider,
+                    error=str(exc),
+                )
+        return ingested
 
     async def _poll_provider(self, provider: str, intake: OrderIntakeService) -> int:
         adapter = build_adapter(provider, resolve_credentials(provider))
